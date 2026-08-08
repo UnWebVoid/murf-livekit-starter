@@ -33,20 +33,21 @@ export interface AppConfig {
 }
 
 export const APP_CONFIG_DEFAULTS: AppConfig = {
-  companyName: 'Nagrik Mitra',
-  pageTitle: 'Financial Services AI Assistant',
-  pageDescription: 'Your voice AI guide for Indian banking, government welfare schemes, digital payments & financial security',
+  companyName: 'Jan Sathi (जन साथी)',
+  pageTitle: 'Jan Sathi – Indian Financial Voice AI Assistant',
+  pageDescription:
+    'Your voice AI guide for Indian government welfare schemes, banking services, digital payments, loan EMI calculations, and cyber fraud security',
 
   supportsChatInput: true,
-  supportsVideoInput: true,
-  supportsScreenShare: true,
+  supportsVideoInput: false,
+  supportsScreenShare: false,
   isPreConnectBufferEnabled: true,
 
   logo: '/murf-logo.svg',
   accent: '#059669',
   logoDark: '/murf-logo-dark.svg',
   accentDark: '#10b981',
-  startButtonText: 'Start Financial Assistant',
+  startButtonText: 'Start Conversation',
 
   // optional: audio visualization configuration
   audioVisualizerType: 'bar',

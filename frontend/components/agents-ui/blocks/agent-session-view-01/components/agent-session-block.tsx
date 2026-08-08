@@ -12,6 +12,8 @@ import { Shimmer } from '@/components/ai-elements/shimmer';
 import { cn } from '@/lib/shadcn/utils';
 import { TileLayout } from './tile-view';
 
+import { AgentStatusBadge, type DisplayAgentState } from '@/components/app/agent-status-badge';
+
 const MotionMessage = motion.create(Shimmer);
 
 const BOTTOM_VIEW_MOTION_PROPS: MotionProps = {
@@ -198,12 +200,31 @@ export function AgentSessionView_01({
     }
   }, [messages]);
 
+  const displayState: DisplayAgentState =
+    agentState === 'speaking'
+      ? 'speaking'
+      : agentState === 'thinking'
+        ? 'thinking'
+        : agentState === 'connecting' || agentState === 'initializing' || agentState === 'pre-connect-buffering'
+          ? 'connecting'
+          : 'listening';
+
   return (
     <section
       ref={ref}
       className={cn('bg-background relative z-10 h-full w-full overflow-hidden', className)}
       {...props}
     >
+      {/* Top Header & Dedicated Agent Status Area */}
+      <div className="absolute top-4 inset-x-0 z-30 flex flex-col items-center gap-2 px-4 pointer-events-none">
+        <div className="text-xs font-extrabold uppercase tracking-widest text-emerald-700 dark:text-emerald-400 bg-card/80 backdrop-blur-md px-4 py-1 rounded-full border border-emerald-500/30 shadow-md pointer-events-auto">
+          Jan Sathi (जन साथी)
+        </div>
+        <div className="pointer-events-auto">
+          <AgentStatusBadge state={displayState} />
+        </div>
+      </div>
+
       <Fade top className="absolute inset-x-4 top-0 z-10 h-40" />
       {/* transcript */}
 
