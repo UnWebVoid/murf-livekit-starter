@@ -11,6 +11,10 @@ KMS
 .pytest_cache
 .ruff_cache
 
+# Day 4 — persistent memory database (may contain personal test data)
+data/
+*.db
+
 # Claude Code
 .claude/settings.local.json
 .claude/worktrees/

@@ -1,3 +1,4 @@
+import json
 import logging
 
 from dotenv import load_dotenv
@@ -16,6 +17,8 @@ from livekit.agents import (
 )
 from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
+
+from memory import db_delete_user, db_lookup_user, db_save_user
 
 logger = logging.getLogger("agent")
 
@@ -91,7 +94,8 @@ The assistant MUST NEVER:
 If asked to verify an account, check application status, approve a loan, or access personal records, politely refuse and say:
 "मैं आपके व्यक्तिगत बैंक खातों या सरकारी रिकॉर्ड्स को एक्सेस नहीं कर सकता। कृपया अपनी बैंक ब्रांच, कस्टमर केयर या आधिकारिक सरकारी पोर्टल से संपर्क करें।"
 
-If users share sensitive information like OTP or PIN, immediately tell them not to share it and explain why.
+If users share sensitive information like OTP or PIN, immediately tell them not to share it and explain why:
+"कृपया अपना OTP, PIN, CVV, या कोई भी गोपनीय जानकारी किसी के साथ share न करें — यहाँ तक कि मेरे साथ भी नहीं। असली bank या सरकारी agent कभी यह नहीं माँगते।"
 
 6. VOICE & SPOKEN RESPONSE STYLE
 - Keep responses short (2-4 spoken sentences max per turn). Avoid long paragraphs.
@@ -99,15 +103,251 @@ If users share sensitive information like OTP or PIN, immediately tell them not 
 - Speak warmly and clearly with natural pauses between ideas.
 - If the user is silent for several seconds, politely ask whether they are still there.
 
-7. FIRST TURN GREETING
-Always start the first conversation with:
-"नमस्ते! मैं जन साथी हूँ। मैं सरकारी योजनाओं, बैंकिंग, UPI payments और वित्तीय सुरक्षा से जुड़े आपके सवालों में मदद करने के लिए यहाँ हूँ। बताइए, आज मैं आपकी क्या हेल्प कर सकता हूँ?"
+7. FIRST TURN GREETING — MEMORY-AWARE (DAY 4)
+At the very start of every conversation, you MUST follow this sequence:
+
+Step 1: Call lookup_user_memory immediately (no exceptions).
+Step 2: Based on the result, choose the appropriate greeting:
+
+  If the user IS RECOGNIZED (returning caller):
+    Greet them warmly by name and naturally mention relevant past topics.
+    Example: "नमस्ते राहुल! आपको फिर से सुनकर अच्छा लगा। पिछली बार हमने PM-KISAN की eligibility के बारे में बात की थी। क्या आप वहीं से आगे बढ़ना चाहेंगे, या कोई नया सवाल है?"
+    DO NOT say: "I found your database record" or "According to my records".
+    Speak as if you simply remember from your last conversation.
+
+  If the user is NEW (not found in memory):
+    Greet as a new user and ask their name:
+    "नमस्ते! मैं जन साथी हूँ। मैं सरकारी योजनाओं, बैंकिंग, UPI payments और वित्तीय सुरक्षा से जुड़े आपके सवालों में मदद करने के लिए यहाँ हूँ। आपका नाम क्या है?"
+
+8. MEMORY RULES (MANDATORY — DAY 4)
+
+LOOKUP:
+  Call lookup_user_memory at the start of every call. Never skip this.
+
+PERMISSION BEFORE SAVING — HARD REQUIREMENT:
+  Before calling save_user_memory, you MUST:
+  1. Tell the user specifically what you want to remember.
+  2. Ask for explicit permission.
+
+  Example:
+  "मैं आपका नाम 'राहुल' और यह जानकारी कि आपने PM-KISAN की eligibility check की थी, अगली बातचीत के लिए याद रख सकता हूँ। क्या आप चाहते हैं कि मैं इसे save करूँ?"
+
+  - If YES → call save_user_memory with user_confirmed=True
+  - If NO → do NOT call save_user_memory. Do not ask again for the same information.
+  - If unclear → ask once more politely, then respect their answer.
+
+WHAT TO SAVE (approved fields only):
+  - Name
+  - Language preference
+  - Government schemes the user asked about (e.g., PM-KISAN, PMJDY, APY)
+  - Eligibility questions and answers
+  - Financial topics discussed
+
+WHAT TO NEVER SAVE OR REQUEST:
+  - OTP, PIN, UPI PIN, CVV, card numbers
+  - Bank account numbers, IFSC codes
+  - Aadhaar number, PAN number
+  - Passwords, passcodes, security answers
+  If a user volunteers any of the above, warn them immediately and do not save anything.
+
+FORGET REQUEST:
+  If the user explicitly asks Jan Sathi to forget them or delete their information,
+  ask for confirmation, then call delete_user_memory with user_confirmed=True.
 """
 
 
 class Assistant(Agent):
+    """Jan Sathi voice agent with persistent memory (Day 4).
+
+    The user_id is NEVER accepted from the LLM. It is derived exclusively from
+    the LiveKit participant identity and injected via set_user_id() after the
+    room connection is established (safeguard 3).
+    """
+
     def __init__(self) -> None:
         super().__init__(instructions=SYSTEM_PROMPT)
+        # Set by my_agent() after ctx.connect() from LiveKit context — not from LLM.
+        self._user_id: str | None = None
+        self._prewarmed_memory: dict | None = None
+
+    def set_user_id(self, user_id: str) -> None:
+        """Inject the LiveKit participant identity as the memory key.
+
+        Called by my_agent() after ctx.connect(). The value comes from
+        ctx.room.remote_participants — never from any LLM-controlled input.
+        Pre-warms the user memory from SQLite so it is instantly available.
+        """
+        self._user_id = user_id
+        self._prewarmed_memory = db_lookup_user(user_id)
+        if self._prewarmed_memory:
+            logger.info("Memory pre-warmed for user_id=%.8s... (name='%s')", user_id, self._prewarmed_memory.get("name"))
+        else:
+            logger.info("Memory context: participant identity set (%.8s...), no existing record", user_id)
+
+    # ------------------------------------------------------------------
+    # MEMORY TOOLS (Day 4)
+    # ------------------------------------------------------------------
+
+    @function_tool
+    async def lookup_user_memory(self, context: RunContext) -> str:
+        """Look up memory for the current caller from the persistent database.
+
+        Call this at the very start of every conversation to check whether the
+        caller is known. Returns whether the user exists, their name, language
+        preference, saved financial facts, and when they last called.
+
+        The user_id is derived from the LiveKit participant identity — it is NOT
+        supplied by the LLM (safeguard 3).
+        """
+        if not self._user_id:
+            logger.warning("lookup_user_memory: user_id not set — treating as new user")
+            return json.dumps({"found": False, "reason": "user identity not available"})
+
+        record = self._prewarmed_memory if self._prewarmed_memory is not None else db_lookup_user(self._user_id)
+
+        if record is None:
+            logger.info("lookup_user_memory: new user (%.8s...)", self._user_id)
+            return json.dumps({"found": False})
+
+        logger.info("lookup_user_memory: returning user (%.8s...)", self._user_id)
+        return json.dumps(
+            {
+                "found": True,
+                "name": record["name"],
+                "language_preference": record["language_pref"],
+                "facts": record["facts"],
+                "last_interaction": record["last_interaction"],
+            }
+        )
+
+    @function_tool
+    async def save_user_memory(
+        self,
+        context: RunContext,
+        user_confirmed: bool,
+        name: str | None = None,
+        language_preference: str | None = None,
+        schemes_checked: list[str] | None = None,
+        eligibility_answers: dict[str, str] | None = None,
+        topics_asked: list[str] | None = None,
+    ) -> str:
+        """Save or update memory for the current caller.
+
+        SAFEGUARD 1 — EXPLICIT CONSENT REQUIRED:
+        This function will REFUSE to save if user_confirmed is not True.
+        Only call this after the user has explicitly agreed (said yes) to saving.
+        If user said no or is unclear, pass user_confirmed=False (or do not call).
+
+        SAFEGUARD 2 — ALLOWLIST FIELDS ONLY:
+        Only the parameters listed below are stored. Any sensitive data
+        (OTP, PIN, CVV, Aadhaar, PAN, card/account numbers, passwords) is
+        rejected at the storage layer regardless of what is passed here.
+
+        SAFEGUARD 3 — user_id from LiveKit:
+        The user_id is derived from the LiveKit participant identity, not from
+        any parameter supplied by the LLM.
+
+        Args:
+            user_confirmed: MUST be True. User has explicitly agreed to save.
+                            If False, this function refuses and returns an error.
+            name: User's first name (e.g. "Rahul"). Never an ID number.
+            language_preference: Preferred language code: 'hi', 'en', 'hinglish'.
+            schemes_checked: Government schemes the user asked about this session
+                             (e.g. ["PM-KISAN", "PMJDY"]).
+            eligibility_answers: Key-value pairs from eligibility questions
+                                 (e.g. {"age": "35", "has_bank_account": "yes"}).
+            topics_asked: Financial topics discussed (e.g. ["credit score", "EMI"]).
+        """
+        # ── Safeguard 1: explicit consent required at function level ──────────
+        if not user_confirmed:
+            logger.info("save_user_memory: refused — user_confirmed=False")
+            return (
+                "Save cancelled: the user has not explicitly confirmed. "
+                "Do NOT save any information without consent."
+            )
+
+        # ── Safeguard 3: user_id from LiveKit context only ────────────────────
+        if not self._user_id:
+            logger.warning("save_user_memory: user_id not set")
+            return "Cannot save: user identity is not available for this session."
+
+        # ── Load existing record to merge facts ───────────────────────────────
+        existing = db_lookup_user(self._user_id)
+        existing_facts: dict = existing["facts"] if existing else {}
+
+        # ── Merge only approved fact keys (safeguard 2 enforced in memory.py) ─
+        merged_facts: dict = {
+            "schemes_checked": list(existing_facts.get("schemes_checked", [])),
+            "eligibility_answers": dict(existing_facts.get("eligibility_answers", {})),
+            "topics_asked": list(existing_facts.get("topics_asked", [])),
+        }
+
+        if schemes_checked:
+            merged_facts["schemes_checked"] = list(
+                set(merged_facts["schemes_checked"]) | set(schemes_checked)
+            )
+        if eligibility_answers:
+            merged_facts["eligibility_answers"].update(eligibility_answers)
+        if topics_asked:
+            merged_facts["topics_asked"] = list(
+                set(merged_facts["topics_asked"]) | set(topics_asked)
+            )
+
+        resolved_name = name or (existing["name"] if existing else None)
+        resolved_lang = language_preference or (existing["language_pref"] if existing else "hi")
+
+        # ── Persist (storage layer strips any non-approved keys) ─────────────
+        db_save_user(
+            user_id=self._user_id,
+            name=resolved_name,
+            language_pref=resolved_lang,
+            facts=merged_facts,
+        )
+        self._prewarmed_memory = db_lookup_user(self._user_id)
+
+        saved_parts = []
+        if resolved_name:
+            saved_parts.append(f"name='{resolved_name}'")
+        if language_preference:
+            saved_parts.append(f"language='{resolved_lang}'")
+        if schemes_checked:
+            saved_parts.append(f"schemes={schemes_checked}")
+        if eligibility_answers:
+            saved_parts.append(f"eligibility_answers={list(eligibility_answers.keys())}")
+        if topics_asked:
+            saved_parts.append(f"topics={topics_asked}")
+
+        summary = ", ".join(saved_parts) if saved_parts else "no new fields"
+        logger.info("save_user_memory: saved for %.8s... (%s)", self._user_id, summary)
+        return f"Memory saved successfully. Stored: {summary}."
+
+    @function_tool
+    async def delete_user_memory(self, context: RunContext, user_confirmed: bool) -> str:
+        """Permanently delete all saved memory for the current caller.
+
+        Call this ONLY when the user explicitly asks Jan Sathi to forget them
+        or delete their saved information.
+
+        Args:
+            user_confirmed: MUST be True. The user has explicitly confirmed deletion.
+        """
+        if not user_confirmed:
+            return "Deletion cancelled: explicit user confirmation is required."
+
+        if not self._user_id:
+            return "Cannot delete: user identity is not available for this session."
+
+        db_delete_user(self._user_id)
+        self._prewarmed_memory = None
+        logger.info("delete_user_memory: deleted record for %.8s...", self._user_id)
+        return (
+            "All saved information has been permanently deleted. "
+            "I no longer have any memory of you — the next call will start fresh."
+        )
+
+    # ------------------------------------------------------------------
+    # EXISTING FINANCIAL TOOLS (Days 1–3 — unchanged)
+    # ------------------------------------------------------------------
 
     @function_tool
     async def calculate_loan_emi(
@@ -273,6 +513,10 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
+    # Create the assistant instance before session.start() so we can set the
+    # user_id after ctx.connect() (safeguard 3: user_id from LiveKit context).
+    assistant = Assistant()
+
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
         # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
@@ -280,6 +524,7 @@ async def my_agent(ctx: JobContext):
         # Large Language Model (LLM) is your agent's brain
         llm=google.LLM(
             model="gemini-3.5-flash-lite",
+            thinking_config={"thinking_level": "minimal"},
         ),
         # Text-to-speech (TTS) is your agent's voice (Murf Falcon)
         tts=murf.TTS(
@@ -288,16 +533,17 @@ async def my_agent(ctx: JobContext):
             style="Conversation",
             tokenizer=HindiSentenceTokenizer(min_sentence_len=2),
             text_pacing=False,
+            min_buffer_size=1,
         ),
         # VAD and turn detection
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
-        preemptive_generation=True,
+        preemptive_generation=False,
     )
 
     # Start the session, which initializes the voice pipeline and warms up the models
     await session.start(
-        agent=Assistant(),
+        agent=assistant,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -313,6 +559,24 @@ async def my_agent(ctx: JobContext):
 
     # Join the room and connect to the user
     await ctx.connect()
+
+    # ── Safeguard 3: Derive user_id from LiveKit participant identity ─────────
+    # The user joined before the agent was dispatched, so remote_participants
+    # should already contain the caller's entry at this point.
+    user_id: str | None = next(
+        (p.identity for p in ctx.room.remote_participants.values() if p.identity),
+        None,
+    )
+
+    if user_id:
+        logger.info(
+            "LiveKit participant identity will be used as memory key (%.8s...)", user_id
+        )
+        assistant.set_user_id(user_id)
+    else:
+        logger.warning(
+            "No remote participant identity found — memory tools inactive for this session"
+        )
 
 
 if __name__ == "__main__":

@@ -44,9 +44,14 @@ export async function POST(req: Request) {
       );
     }
       
-    // Generate participant token
+    // Use the stable user_id sent by the client (from localStorage) as the
+    // participant identity so the agent can link memory across separate calls.
+    // Sanitize: allow only alphanumeric, underscore, and hyphen; max 64 chars.
+    const rawUserId = typeof body?.user_id === 'string' ? body.user_id.trim() : '';
     const participantName = 'user';
-    const participantIdentity = `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
+    const participantIdentity = rawUserId
+      ? rawUserId.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 64)
+      : `voice_assistant_user_${Math.floor(Math.random() * 10_000)}`;
     const roomName = `voice_assistant_room_${Math.floor(Math.random() * 10_000)}`;
 
     const participantToken = await createParticipantToken(

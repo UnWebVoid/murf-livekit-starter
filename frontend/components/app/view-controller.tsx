@@ -62,6 +62,9 @@ export function ViewController({ appConfig }: ViewControllerProps) {
   }, [isConnected, connectionState, wasConnected]);
 
   const handleStartCall = useCallback(async () => {
+    if (isConnecting || isConnected) {
+      return;
+    }
     setErrorDetails(null);
     setIsConnecting(true);
 

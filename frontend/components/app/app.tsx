@@ -12,6 +12,7 @@ import { Toaster } from '@/components/ui/sonner';
 import { useAgentErrors } from '@/hooks/useAgentErrors';
 import { useDebugMode } from '@/hooks/useDebug';
 import { getSandboxTokenSource } from '@/lib/utils';
+import { getUserId } from '@/hooks/useUserId';
 
 const IN_DEVELOPMENT = process.env.NODE_ENV !== 'production';
 
@@ -28,9 +29,23 @@ interface AppProps {
 
 export function App({ appConfig }: AppProps) {
   const tokenSource = useMemo(() => {
-    return typeof process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT === 'string'
-      ? getSandboxTokenSource(appConfig)
-      : TokenSource.endpoint('/api/token');
+    if (typeof process.env.NEXT_PUBLIC_CONN_DETAILS_ENDPOINT === 'string') {
+      return getSandboxTokenSource(appConfig);
+    }
+    // Custom source: POST the stable localStorage UUID as user_id so the LiveKit
+    // participantIdentity is consistent across calls and the agent can look up memory.
+    // getUserId() is called lazily inside the async callback (not at render time)
+    // to avoid SSR / hydration issues.
+    return TokenSource.custom(async () => {
+      const userId = getUserId();
+      const res = await fetch('/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId }),
+      });
+      if (!res.ok) throw new Error(`Token request failed: ${res.status} ${res.statusText}`);
+      return res.json();
+    });
   }, [appConfig]);
 
   const session = useSession(
