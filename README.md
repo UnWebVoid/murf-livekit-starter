@@ -227,6 +227,18 @@ STT is configured in `backend/src/agent.py` in the `AgentSession(stt=...)` call.
 
 Murf Falcon and LiveKit handle audio format internally. For advanced options, see [Murf API docs](https://murf.ai/api/docs) and [LiveKit docs](https://docs.livekit.io).
 
+## Day 5 — Jan Sathi Scheme Eligibility Tool (`check_financial_scheme_eligibility`)
+
+Jan Sathi features a specialized function tool `check_financial_scheme_eligibility` for conversational eligibility evaluation of Indian government financial schemes.
+
+- **Supported Schemes**:
+  - **PMJJBY**: Life insurance cover (age 18–50, bank/Post Office account, ₹436/yr, ₹2 lakh cover).
+  - **PMSBY**: Accident insurance cover (age 18–70, bank/Post Office account, ₹20/yr, ₹2 lakh accidental death/total disability, ₹1 lakh partial disability).
+  - **PMJDY**: Basic banking access for unbanked individuals (zero minimum balance BSBD account, free RuPay debit card, overdraft facility).
+- **Data Source**: Locally curated dataset derived from official Government of India Department of Financial Services (DFS) portals ([https://www.financialservices.gov.in/schemes-and-services](https://www.financialservices.gov.in/schemes-and-services)), verified as of **August 10, 2026**.
+- **Transparent Output**: Results are communicated as informational basic eligibility checks and strictly state the verification date and official source without claiming to be live data.
+- **Graceful Failure**: Employs exception-safe evaluation returning structured error status on data failure.
+
 ---
 
 ## Project Structure

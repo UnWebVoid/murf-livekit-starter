@@ -7,6 +7,7 @@ from livekit.agents import (
     Agent,
     AgentServer,
     AgentSession,
+    APIConnectOptions,
     JobContext,
     JobProcess,
     RunContext,
@@ -15,10 +16,12 @@ from livekit.agents import (
     room_io,
     tokenize,
 )
+from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from memory import db_delete_user, db_lookup_user, db_save_user
+from schemes_data import LAST_VERIFIED_DATE, evaluate_scheme_eligibility
 
 logger = logging.getLogger("agent")
 
@@ -104,25 +107,22 @@ If users share sensitive information like OTP or PIN, immediately tell them not 
 - If the user is silent for several seconds, politely ask whether they are still there.
 
 7. FIRST TURN GREETING — MEMORY-AWARE (DAY 4)
-At the very start of every conversation, you MUST follow this sequence:
+Check the CURRENT USER MEMORY CONTEXT section at the end of these instructions:
 
-Step 1: Call lookup_user_memory immediately (no exceptions).
-Step 2: Based on the result, choose the appropriate greeting:
-
-  If the user IS RECOGNIZED (returning caller):
+  If existing record is Found (returning caller):
     Greet them warmly by name and naturally mention relevant past topics.
     Example: "नमस्ते राहुल! आपको फिर से सुनकर अच्छा लगा। पिछली बार हमने PM-KISAN की eligibility के बारे में बात की थी। क्या आप वहीं से आगे बढ़ना चाहेंगे, या कोई नया सवाल है?"
     DO NOT say: "I found your database record" or "According to my records".
     Speak as if you simply remember from your last conversation.
 
-  If the user is NEW (not found in memory):
+  If no record is found (new caller):
     Greet as a new user and ask their name:
     "नमस्ते! मैं जन साथी हूँ। मैं सरकारी योजनाओं, बैंकिंग, UPI payments और वित्तीय सुरक्षा से जुड़े आपके सवालों में मदद करने के लिए यहाँ हूँ। आपका नाम क्या है?"
 
 8. MEMORY RULES (MANDATORY — DAY 4)
 
 LOOKUP:
-  Call lookup_user_memory at the start of every call. Never skip this.
+  Memory is automatically loaded at connection time from the participant identity into system instructions.
 
 PERMISSION BEFORE SAVING — HARD REQUIREMENT:
   Before calling save_user_memory, you MUST:
@@ -153,7 +153,40 @@ WHAT TO NEVER SAVE OR REQUEST:
 FORGET REQUEST:
   If the user explicitly asks Jan Sathi to forget them or delete their information,
   ask for confirmation, then call delete_user_memory with user_confirmed=True.
+
+9. DAY 5 SCHEME ELIGIBILITY TOOL RULES (check_financial_scheme_eligibility)
+
+WHEN TO CALL:
+- Call check_financial_scheme_eligibility ONLY when the user asks whether they qualify for, fit the basic criteria for, or should consider one of the supported financial schemes (PMJJBY, PMSBY, PMJDY).
+- Examples requiring the tool:
+  * "I'm 25 years old and have a bank account. Could I be eligible for PMJJBY?"
+  * "Can I get PMSBY accident insurance if I am 60 years old?"
+  * "Am I eligible for Jan Dhan Yojana if I don't have a bank account?"
+- Examples NOT requiring the tool:
+  * "What is insurance?"
+  * "What is PMJJBY?"
+  * "What is UPI?"
+  * Answer generic informational questions directly without invoking check_financial_scheme_eligibility unless an eligibility check is explicitly requested.
+
+CONVERSATIONAL INPUT COLLECTION:
+- The tool requires basic inputs (e.g. age for PMJJBY/PMSBY, bank account status).
+- If required information (like age) is missing, ask for it naturally before calling the tool.
+- If age or bank account status was already provided in the current conversation or from approved Day 4 memory, use it directly without re-asking.
+- NEVER ask for sensitive financial credentials (Aadhaar, PAN, account numbers, PIN, OTP, passwords).
+
+NATURAL SPOKEN RESPONSE FORMATTING:
+- NEVER read raw JSON or dict outputs to the user.
+- Explain the returned result naturally and concisely.
+- For potential matches, state: "Based on the information provided, you appear to meet the basic criteria for..." (never state it as a guaranteed official decision).
+- MANDATORY TRANSPARENCY: Always mention the verification date and local dataset source in natural phrasing:
+  "This result is based on a locally curated dataset from official Department of Financial Services information, last verified on August 10, 2026."
+- Recommend checking with their bank branch or official website before applying.
+
+FAILURE PATH HANDLING:
+- If the tool returns a status of "error", do NOT guess or hallucinate eligibility.
+- Say clearly: "I'm sorry, I couldn't access the scheme eligibility information right now, so I don't want to guess. Please try again shortly or check the official government source."
 """
+
 
 
 class Assistant(Agent):
@@ -170,19 +203,33 @@ class Assistant(Agent):
         self._user_id: str | None = None
         self._prewarmed_memory: dict | None = None
 
-    def set_user_id(self, user_id: str) -> None:
+    async def set_user_id(self, user_id: str) -> None:
         """Inject the LiveKit participant identity as the memory key.
 
         Called by my_agent() after ctx.connect(). The value comes from
         ctx.room.remote_participants — never from any LLM-controlled input.
-        Pre-warms the user memory from SQLite so it is instantly available.
+        Pre-warms the user memory from SQLite and updates instructions directly.
         """
         self._user_id = user_id
         self._prewarmed_memory = db_lookup_user(user_id)
         if self._prewarmed_memory:
             logger.info("Memory pre-warmed for user_id=%.8s... (name='%s')", user_id, self._prewarmed_memory.get("name"))
+            memory_summary = (
+                f"\n\n10. CURRENT USER MEMORY CONTEXT:\n"
+                f"- Found existing record: Yes\n"
+                f"- User Name: {self._prewarmed_memory.get('name')}\n"
+                f"- Preferred Language: {self._prewarmed_memory.get('language_pref')}\n"
+                f"- Saved Facts: {json.dumps(self._prewarmed_memory.get('facts', {}), ensure_ascii=False)}\n"
+                f"- Last interaction: {self._prewarmed_memory.get('last_interaction')}\n"
+            )
         else:
             logger.info("Memory context: participant identity set (%.8s...), no existing record", user_id)
+            memory_summary = (
+                f"\n\n10. CURRENT USER MEMORY CONTEXT:\n"
+                f"- Found existing record: No (new caller).\n"
+            )
+        
+        await self.update_instructions(SYSTEM_PROMPT + memory_summary)
 
     # ------------------------------------------------------------------
     # MEMORY TOOLS (Day 4)
@@ -410,41 +457,66 @@ class Assistant(Agent):
         )
 
     @function_tool
-    async def check_scheme_eligibility(
+    async def check_financial_scheme_eligibility(
         self,
         context: RunContext,
-        scheme_name: str,
-        age: int,
+        scheme_name: str | None = None,
+        category_of_interest: str | None = None,
+        age: int | None = None,
+        has_bank_or_post_office_account: bool | None = None,
+        is_unbanked: bool | None = None,
+        simulate_failure: bool = False,
     ) -> str:
-        """Check general eligibility criteria for popular Indian government welfare & financial schemes.
+        """Check potential basic eligibility for Indian government financial schemes (PMJJBY, PMSBY, PMJDY).
+
+        CALL THIS TOOL ONLY when the user explicitly asks whether they qualify for, fit basic criteria for,
+        or should consider a supported scheme (PMJJBY life insurance, PMSBY accident insurance, PMJDY basic banking).
+
+        DO NOT call this tool for generic informational questions like 'What is PMJJBY?', 'What is insurance?', or 'What is UPI?'.
 
         Args:
-            scheme_name: Name of scheme (e.g. PMJDY, PMJJBY, PMSBY, APY, SSY, PM-KISAN).
-            age: Age of the applicant in years.
+            scheme_name: Name of scheme if requested (e.g. "PMJJBY", "PMSBY", "PMJDY").
+            category_of_interest: Category of interest if scheme name is omitted (e.g. "life_insurance", "accident_insurance", "basic_banking").
+            age: Age of applicant in years (required for PMJJBY/PMSBY).
+            has_bank_or_post_office_account: Whether the user holds an individual savings account in a participating bank or Post Office.
+            is_unbanked: Whether the user is currently unbanked (relevant for PMJDY).
+            simulate_failure: Internal backend test flag to trigger failure path testing.
         """
-        logger.info(f"Checking scheme eligibility for {scheme_name}, age: {age}")
-        s_lower = scheme_name.lower()
-        if "pmjjby" in s_lower or "jeevan jyoti" in s_lower:
-            eligible = 18 <= age <= 50
-            details = "Pradhan Mantri Jeevan Jyoti Bima Yojana provides ₹2 Lakh life insurance cover for ₹436/year. Entry age is 18 to 50 years."
-        elif "pmsby" in s_lower or "suraksha bima" in s_lower:
-            eligible = 18 <= age <= 70
-            details = "Pradhan Mantri Suraksha Bima Yojana provides ₹2 Lakh accidental insurance cover for ₹20/year. Entry age is 18 to 70 years."
-        elif "apy" in s_lower or "atal pension" in s_lower:
-            eligible = 18 <= age <= 40
-            details = "Atal Pension Yojana offers guaranteed monthly pension (₹1,000 to ₹5,000) post age 60. Entry age is 18 to 40 years."
-        elif "jandhan" in s_lower or "pmjdy" in s_lower:
-            eligible = age >= 10
-            details = "PM Jan Dhan Yojana offers zero-balance savings account, RuPay debit card, ₹2 Lakh accident insurance, and ₹10,000 overdraft facility."
-        elif "sukanya" in s_lower or "ssy" in s_lower:
-            eligible = age <= 10
-            details = "Sukanya Samriddhi Yojana is for girl children below 10 years of age, offering tax-free savings for education and marriage."
-        else:
-            eligible = True
-            details = f"General details for {scheme_name}: Please verify exact criteria on the official portal."
+        logger.info(
+            "check_financial_scheme_eligibility: scheme=%s, category=%s, age=%s, account=%s, unbanked=%s, simulate_failure=%s",
+            scheme_name,
+            category_of_interest,
+            age,
+            has_bank_or_post_office_account,
+            is_unbanked,
+            simulate_failure,
+        )
 
-        status = "Eligible" if eligible else "Not Eligible based on age criteria"
-        return f"Scheme: {scheme_name}. Status: {status}. Details: {details}"
+        try:
+            if simulate_failure:
+                raise RuntimeError("Simulated dataset access failure for testing error path")
+
+            res_dict = evaluate_scheme_eligibility(
+                scheme_name=scheme_name,
+                category_of_interest=category_of_interest,
+                age=age,
+                has_bank_or_post_office_account=has_bank_or_post_office_account,
+                is_unbanked=is_unbanked,
+            )
+            return json.dumps(res_dict, ensure_ascii=False)
+
+        except Exception as err:
+            logger.error("check_financial_scheme_eligibility failed: %s", err, exc_info=True)
+            failure_dict = {
+                "status": "error",
+                "scheme": scheme_name or category_of_interest or "unknown",
+                "reason": "Unable to access scheme eligibility dataset at this time.",
+                "official_source": "https://www.financialservices.gov.in/schemes-and-services",
+                "last_verified": LAST_VERIFIED_DATE,
+                "disclaimer": "This system could not verify eligibility right now. Please check official government portals directly.",
+            }
+            return json.dumps(failure_dict, ensure_ascii=False)
+
 
     @function_tool
     async def report_fraud_guidance(
@@ -496,7 +568,7 @@ class HindiSentenceTokenizer(tokenize.basic.SentenceTokenizer):
         )
 
 
-server = AgentServer()
+server = AgentServer(num_idle_processes=1)
 
 
 def prewarm(proc: JobProcess):
@@ -519,12 +591,12 @@ async def my_agent(ctx: JobContext):
 
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
+        # Speech-to-text (STT) is your agent's ears
         stt=deepgram.STT(model="nova-3"),
-        # Large Language Model (LLM) is your agent's brain
+        # Large Language Model (LLM) using active gemini-3.5-flash-lite
         llm=google.LLM(
             model="gemini-3.5-flash-lite",
-            thinking_config={"thinking_level": "minimal"},
+            temperature=0,
         ),
         # Text-to-speech (TTS) is your agent's voice (Murf Falcon)
         tts=murf.TTS(
@@ -532,29 +604,42 @@ async def my_agent(ctx: JobContext):
             locale="en-IN",
             style="Conversation",
             tokenizer=HindiSentenceTokenizer(min_sentence_len=2),
-            text_pacing=False,
-            min_buffer_size=1,
+            text_pacing=True,
+            min_buffer_size=5,
         ),
         # VAD and turn detection
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=False,
+        # Allow agent to retry TTS and LLM more aggressively on transient failures
+        allow_interruptions=True,
+        # Faster turn detection (snappier response start after user stops speaking)
+        min_endpointing_delay=0.3,
+        max_endpointing_delay=3.0,
+        # Retry failed LLM/TTS/STT calls quickly instead of default 2s wait
+        conn_options=SessionConnectOptions(
+            llm_conn_options=APIConnectOptions(
+                max_retry=5,
+                retry_interval=0.5,
+                timeout=15.0,
+            ),
+            tts_conn_options=APIConnectOptions(
+                max_retry=5,
+                retry_interval=0.5,
+                timeout=15.0,
+            ),
+            stt_conn_options=APIConnectOptions(
+                max_retry=5,
+                retry_interval=0.5,
+                timeout=15.0,
+            ),
+        ),
     )
 
-    # Start the session, which initializes the voice pipeline and warms up the models
+    # Start the session, initializing the voice pipeline with standard WebRTC audio
     await session.start(
         agent=assistant,
         room=ctx.room,
-        room_options=room_io.RoomOptions(
-            audio_input=room_io.AudioInputOptions(
-                noise_cancellation=lambda params: (
-                    noise_cancellation.BVCTelephony()
-                    if params.participant.kind
-                    == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                    else noise_cancellation.BVC()
-                ),
-            ),
-        ),
     )
 
     # Join the room and connect to the user
@@ -572,7 +657,7 @@ async def my_agent(ctx: JobContext):
         logger.info(
             "LiveKit participant identity will be used as memory key (%.8s...)", user_id
         )
-        assistant.set_user_id(user_id)
+        await assistant.set_user_id(user_id)
     else:
         logger.warning(
             "No remote participant identity found — memory tools inactive for this session"

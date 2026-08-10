@@ -210,6 +210,26 @@ docker build -t murf-voice-agent .
 docker run --env-file .env.local murf-voice-agent
 ```
 
+## Day 5 — Financial Scheme Eligibility Tool (`check_financial_scheme_eligibility`)
+
+Jan Sathi includes a dedicated financial domain function tool `check_financial_scheme_eligibility` for checking potential eligibility for Indian government financial schemes.
+
+### Key Capabilities
+- **Supported Schemes**:
+  - **PMJJBY** (Pradhan Mantri Jeevan Jyoti Bima Yojana): Age 18–50, bank/Post Office account, ₹436/yr premium, ₹2 lakh life cover.
+  - **PMSBY** (Pradhan Mantri Suraksha Bima Yojana): Age 18–70, bank/Post Office account, ₹20/yr premium, ₹2 lakh accidental death/total disability cover, ₹1 lakh partial disability.
+  - **PMJDY** (Pradhan Mantri Jan Dhan Yojana): Basic banking access for unbanked persons, zero minimum balance BSBD account, free RuPay debit card, overdraft facility.
+- **Data Source**: Locally curated dataset derived from official Government of India Department of Financial Services (DFS) portals.
+- **Official Source URLs**:
+  - DFS Portal: [https://www.financialservices.gov.in/schemes-and-services](https://www.financialservices.gov.in/schemes-and-services)
+  - PMJJBY: [https://www.financialservices.gov.in/pmjjby](https://www.financialservices.gov.in/pmjjby)
+  - PMSBY: [https://www.financialservices.gov.in/pmsby](https://www.financialservices.gov.in/pmsby)
+  - PMJDY: [https://www.financialservices.gov.in/pradhan-mantri-jan-dhan-yojana-pmjdy](https://www.financialservices.gov.in/pradhan-mantri-jan-dhan-yojana-pmjdy)
+  - myScheme: [https://www.myscheme.gov.in/](https://www.myscheme.gov.in/)
+- **Last Verified Date**: **August 10, 2026**
+- **Graceful Error Path**: On dataset exception, returns structured `"status": "error"` and the agent fallback response: *"I'm sorry, I couldn't access the scheme eligibility information right now, so I don't want to guess. Please try again shortly or check the official government source."*
+- **Disclaimer**: All output is strictly informational basic eligibility guidance and not a guaranteed official eligibility decision.
+
 ## Project Structure
 
 ```
