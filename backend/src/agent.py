@@ -187,6 +187,36 @@ FAILURE PATH HANDLING:
 - Say clearly: "I'm sorry, I couldn't access the scheme eligibility information right now, so I don't want to guess. Please try again shortly or check the official government source."
 """
 
+OUTBOUND_SYSTEM_PROMPT = """
+
+11. OUTBOUND CALL INSTRUCTIONS (DAY 6 — PMJJBY SCHEME INFORMATION & REMINDER CALL)
+You are placing an outbound phone call to a recipient regarding government financial/insurance schemes.
+
+MANDATORY FIRST TURN OPENING (APPLIES IMMEDIATELY WHEN CALL CONNECTS):
+Your VERY FIRST turn MUST state:
+1. Who is calling: "Hello! This is Jan Sathi, an automated financial-services assistant."
+2. Why you are calling: "I'm calling to follow up on information you previously checked about a government insurance scheme such as PMJJBY."
+3. How to opt out: "If you don't want to receive calls like this, just say 'stop' and I'll end the call."
+
+Combine these 3 mandatory elements smoothly into your initial spoken greeting.
+
+STRICT INFORMATION & REMINDER RULES:
+- Do NOT claim that the recipient is definitely enrolled, definitely eligible, or that their renewal is due unless explicitly present in approved Day 4 memory.
+- Provide general PMJJBY information from the dataset:
+  * Premium: ₹436 annual premium
+  * Coverage: ₹2 lakh life cover (death due to any cause)
+  * Account requirement: Individual savings account in a participating bank or Post Office with auto-debit consent
+  * How to enroll: Visit an appropriate participating bank branch or official portal to verify terms and apply.
+- Do NOT invent personalized renewal status or fake account decisions.
+
+OPT-OUT PROCEDURE:
+- When the recipient says "stop", "don't call me", "opt out", "end call", or "रोकें":
+  1. Immediately invoke the end_call_and_opt_out function tool.
+  2. Say: "Understood. I won't continue this call. Thank you, and have a good day."
+  3. The tool will disconnect the call cleanly.
+"""
+
+
 
 
 class Assistant(Agent):
@@ -202,6 +232,19 @@ class Assistant(Agent):
         # Set by my_agent() after ctx.connect() from LiveKit context — not from LLM.
         self._user_id: str | None = None
         self._prewarmed_memory: dict | None = None
+        self._room: rtc.Room | None = None
+        self._is_outbound: bool = False
+
+    def set_room(self, room: rtc.Room) -> None:
+        """Store the LiveKit room instance for session control (e.g. clean disconnect on opt-out)."""
+        self._room = room
+
+    async def enable_outbound_mode(self) -> None:
+        """Enable Day 6 outbound prompt rules for phone call sessions."""
+        self._is_outbound = True
+        base_inst = self._instructions if hasattr(self, "_instructions") else SYSTEM_PROMPT
+        await self.update_instructions(base_inst + OUTBOUND_SYSTEM_PROMPT)
+
 
     async def set_user_id(self, user_id: str) -> None:
         """Inject the LiveKit participant identity as the memory key.
@@ -229,7 +272,9 @@ class Assistant(Agent):
                 f"- Found existing record: No (new caller).\n"
             )
         
-        await self.update_instructions(SYSTEM_PROMPT + memory_summary)
+        base_inst = SYSTEM_PROMPT + OUTBOUND_SYSTEM_PROMPT if self._is_outbound else SYSTEM_PROMPT
+        await self.update_instructions(base_inst + memory_summary)
+
 
     # ------------------------------------------------------------------
     # MEMORY TOOLS (Day 4)
@@ -517,6 +562,29 @@ class Assistant(Agent):
             }
             return json.dumps(failure_dict, ensure_ascii=False)
 
+    @function_tool
+    async def end_call_and_opt_out(self, context: RunContext) -> str:
+        """End the current phone call immediately when the recipient asks to stop, opt out, or end the call.
+
+        Call this tool when the user says 'stop', 'don't call me', 'opt out', or 'रोकें'.
+        """
+        logger.info("end_call_and_opt_out: Opt-out requested by user. Scheduling call disconnect.")
+        if self._room:
+            import asyncio
+
+            async def _disconnect_room():
+                await asyncio.sleep(4.0)
+                try:
+                    await self._room.disconnect()
+                    logger.info("Room disconnected cleanly following user opt-out.")
+                except Exception as err:
+                    logger.warning("Error disconnecting room: %s", err)
+
+            asyncio.create_task(_disconnect_room())
+
+        return "Understood. I won't continue this call. Thank you, and have a good day."
+
+
 
     @function_tool
     async def report_fraud_guidance(
@@ -588,6 +656,7 @@ async def my_agent(ctx: JobContext):
     # Create the assistant instance before session.start() so we can set the
     # user_id after ctx.connect() (safeguard 3: user_id from LiveKit context).
     assistant = Assistant()
+    assistant.set_room(ctx.room)
 
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
@@ -662,6 +731,19 @@ async def my_agent(ctx: JobContext):
         logger.warning(
             "No remote participant identity found — memory tools inactive for this session"
         )
+
+    # ── Day 6: Outbound Session Detection & Auto-Greeting ────────────────────
+    is_outbound = any(
+        p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+        or p.attributes.get("call_type") == "outbound"
+        for p in ctx.room.remote_participants.values()
+    ) or "outbound" in ctx.room.name.lower()
+
+    if is_outbound:
+        logger.info("Outbound call session detected (room=%s) — enabling Day 6 outbound prompt & greeting", ctx.room.name)
+        await assistant.enable_outbound_mode()
+        await session.generate_reply()
+
 
 
 if __name__ == "__main__":
