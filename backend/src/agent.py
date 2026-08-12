@@ -20,7 +20,12 @@ from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-from memory import db_delete_user, db_lookup_user, db_save_user
+from memory import (
+    db_create_escalation,
+    db_delete_user,
+    db_lookup_user,
+    db_save_user,
+)
 from schemes_data import LAST_VERIFIED_DATE, evaluate_scheme_eligibility
 
 logger = logging.getLogger("agent")
@@ -185,6 +190,32 @@ NATURAL SPOKEN RESPONSE FORMATTING:
 FAILURE PATH HANDLING:
 - If the tool returns a status of "error", do NOT guess or hallucinate eligibility.
 - Say clearly: "I'm sorry, I couldn't access the scheme eligibility information right now, so I don't want to guess. Please try again shortly or check the official government source."
+
+10. DAY 7 HUMAN HELP / ESCALATION RULES (create_escalation)
+
+WHEN ESCALATION IS APPROPRIATE:
+Recognize when human help is appropriate in either of these two situations:
+1. Suspected Financial Fraud / Scam: User reports possible financial fraud, unauthorized transactions, fake calls, scam attempts, or suspicious UPI deductions.
+2. Complex Financial Review: User requires a financial decision, official dispute handling, or assistance that Jan Sathi cannot or should not make independently and requires human review.
+
+MANDATORY PERMISSION FLOW (STRICT REQUIREMENT):
+Before creating an escalation, you MUST:
+1. Explain clearly that you want to share a short summary with a human helper.
+2. Ask for explicit user permission.
+
+Example (Hindi): "मैं इस मामले का एक संक्षिप्त विवरण हमारे मानव सहायक (human helper) के साथ साझा करने के लिए help request बना सकता हूँ। क्या आपकी अनुमति है कि मैं यह request create करूँ?"
+Example (English): "I can create a short summary of this issue to share with a human helper. Do I have your permission to create this escalation request?"
+
+- If user says YES → Call `create_escalation` function tool with `user_confirmed=True`.
+- If user says NO → Do NOT call `create_escalation`. Continue helping safely where possible (e.g. guide to 1930 Cyber Crime Helpline or bank card blocking). Say: "कोई बात नहीं, मैं आपकी मदद यहाँ बिना request बनाए जारी रखूँगा।"
+
+AFTER SUCCESSFUL CREATION:
+Once `create_escalation` completes and returns a Reference ID:
+1. State clearly that the request has been created.
+2. State the exact Reference ID returned by the tool (e.g. "आपका Reference ID है: ESC-20260812-7A9B").
+3. Explain that a human helper can review the request.
+4. Provide an honest next step (e.g. advise calling 1930 Cyber Crime Helpline or visiting bank branch if active fraud is suspected).
+5. DO NOT promise an immediate response or a specific response time.
 """
 
 OUTBOUND_SYSTEM_PROMPT = """
@@ -605,6 +636,76 @@ class Assistant(Agent):
             "3. Notify your bank branch within 3 days — under RBI guidelines, zero customer liability applies for timely reported unauthorized transactions.\n"
             "4. Never share OTP, UPI PIN, CVV, or passwords with anyone."
         )
+
+    @function_tool
+    async def create_escalation(
+        self,
+        context: RunContext,
+        user_confirmed: bool,
+        what_happened: str,
+        what_checked: str,
+        urgency: str = "high",
+        language: str = "hi",
+        preferred_follow_up: str = "not specified",
+    ) -> str:
+        """Create a human help / escalation request record when user explicitly permits (Day 7).
+
+        SAFEGUARD — EXPLICIT PERMISSION REQUIRED:
+        This tool MUST ONLY be called after explaining to the caller that a short summary
+        will be shared with a human helper and obtaining explicit user permission (user_confirmed=True).
+        If user_confirmed is False, the escalation is refused.
+
+        PRIVACY SAFEGUARD:
+        Never include passwords, OTPs, PINs, bank account numbers, or card details in any arguments.
+        Inputs are automatically sanitized before storage.
+
+        Args:
+            user_confirmed: MUST be True. The caller has explicitly consented to creating an escalation request.
+            what_happened: Sanitized description of the fraud, scam, or complex issue needing human review.
+            what_checked: Sanitized summary of what Jan Sathi checked or explained (e.g. 1930 Helpline info, card block steps).
+            urgency: Urgency level ('low', 'medium', 'high', 'emergency'). Default is 'high'.
+            language: Caller's language ('hi', 'en', 'hinglish'). Default is 'hi'.
+            preferred_follow_up: Preferred follow-up method (e.g. 'phone call', 'SMS', 'bank visit', 'not specified').
+        """
+        if not user_confirmed:
+            logger.info("create_escalation refused — user_confirmed=False")
+            return json.dumps(
+                {
+                    "status": "refused",
+                    "reason": "Escalation cancelled: explicit user permission was not granted.",
+                },
+                ensure_ascii=False,
+            )
+
+        caller_name = (
+            self._prewarmed_memory.get("name")
+            if self._prewarmed_memory and self._prewarmed_memory.get("name")
+            else "Anonymous Caller"
+        )
+        effective_user_id = self._user_id or "unknown_caller"
+
+        try:
+            res = db_create_escalation(
+                user_id=effective_user_id,
+                what_happened=what_happened,
+                what_checked=what_checked,
+                who_needs_help=caller_name,
+                urgency=urgency,
+                language=language,
+                follow_up_pref=preferred_follow_up,
+            )
+            logger.info("create_escalation tool succeeded: ref_id=%s", res["reference_id"])
+            return json.dumps(res, ensure_ascii=False)
+        except Exception as err:
+            logger.error("create_escalation tool error: %s", err, exc_info=True)
+            return json.dumps(
+                {
+                    "status": "error",
+                    "reason": "Could not save escalation request to database.",
+                },
+                ensure_ascii=False,
+            )
+
 
 
 class HindiSentenceTokenizer(tokenize.basic.SentenceTokenizer):

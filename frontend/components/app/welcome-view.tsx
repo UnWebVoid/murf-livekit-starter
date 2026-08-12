@@ -1,7 +1,8 @@
 'use client';
 
 import React from 'react';
-import { Mic, Sparkles, ShieldCheck, Landmark, Calculator, Lock, RotateCcw } from 'lucide-react';
+import Link from 'next/link';
+import { Mic, Sparkles, ShieldCheck, Landmark, Calculator, Lock, RotateCcw, LifeBuoy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { AgentStatusBadge } from '@/components/app/agent-status-badge';
 import { cn } from '@/lib/shadcn/utils';
@@ -52,6 +53,19 @@ export const WelcomeView = ({
         <p className="text-muted-foreground text-sm md:text-base max-w-lg mx-auto leading-relaxed">
           Your trusted voice AI guide for Indian government schemes, banking services, UPI payments, loan EMI calculation, and financial cyber safety.
         </p>
+
+        <div className="pt-1">
+          <Link href="/escalations">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full text-xs font-semibold gap-1.5 border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 shadow-sm"
+            >
+              <LifeBuoy className="h-3.5 w-3.5 text-amber-500" />
+              <span>Human Help Requests Dashboard</span>
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {/* Main Status & Interactive Action Container */}
