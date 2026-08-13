@@ -2,7 +2,7 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Mic, Sparkles, ShieldCheck, Landmark, Calculator, Lock, RotateCcw, LifeBuoy } from 'lucide-react';
+import { Mic, Sparkles, ShieldCheck, Landmark, Calculator, Lock, RotateCcw, LifeBuoy, BarChart3 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { AgentStatusBadge } from '@/components/app/agent-status-badge';
 import { cn } from '@/lib/shadcn/utils';
@@ -24,7 +24,7 @@ export const WelcomeView = ({
   ref,
   className,
   ...props
-}: React.ComponentProps<'div'> & WelcomeViewProps) => {
+}: WelcomeViewProps & React.ComponentPropsWithRef<'div'>) => {
   const handleAction = () => {
     if (hasEnded && onStartAgain) {
       onStartAgain();
@@ -36,12 +36,12 @@ export const WelcomeView = ({
   return (
     <div
       ref={ref}
-      className={cn('flex flex-col items-center justify-center min-h-[85vh] px-4 py-8 max-w-2xl mx-auto w-full text-center', className)}
+      className={cn('flex flex-col items-center justify-center min-h-[calc(100vh-4rem)] px-4 py-8 text-center animate-in fade-in duration-300', className)}
       {...props}
     >
       {/* Brand Header & Badge */}
-      <div className="space-y-4 mb-6">
-        <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3.5 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+      <div className="space-y-4 max-w-xl mx-auto mb-6">
+        <div className="inline-flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-1 text-xs font-semibold text-emerald-700 dark:text-emerald-300 shadow-sm backdrop-blur-md">
           <Sparkles className="h-3.5 w-3.5 text-emerald-500" />
           <span>Indian Financial Awareness AI</span>
         </div>
@@ -54,7 +54,17 @@ export const WelcomeView = ({
           Your trusted voice AI guide for Indian government schemes, banking services, UPI payments, loan EMI calculation, and financial cyber safety.
         </p>
 
-        <div className="pt-1">
+        <div className="pt-1 flex flex-wrap items-center justify-center gap-2">
+          <Link href="/analytics">
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full text-xs font-semibold gap-1.5 border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 shadow-sm"
+            >
+              <BarChart3 className="h-3.5 w-3.5 text-emerald-500" />
+              <span>Call Analytics Dashboard</span>
+            </Button>
+          </Link>
           <Link href="/escalations">
             <Button
               variant="outline"

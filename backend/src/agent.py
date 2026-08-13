@@ -20,11 +20,15 @@ from livekit.agents.voice.agent_session import SessionConnectOptions
 from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+import uuid
 from memory import (
     db_create_escalation,
     db_delete_user,
+    db_end_call,
     db_lookup_user,
+    db_mark_call_success,
     db_save_user,
+    db_start_call,
 )
 from schemes_data import LAST_VERIFIED_DATE, evaluate_scheme_eligibility
 
@@ -265,6 +269,11 @@ class Assistant(Agent):
         self._prewarmed_memory: dict | None = None
         self._room: rtc.Room | None = None
         self._is_outbound: bool = False
+        self._call_id: str | None = None
+
+    def set_call_id(self, call_id: str) -> None:
+        """Store unique session call_id for Day 8 call analytics tracking."""
+        self._call_id = call_id
 
     def set_room(self, room: rtc.Room) -> None:
         """Store the LiveKit room instance for session control (e.g. clean disconnect on opt-out)."""
@@ -579,6 +588,8 @@ class Assistant(Agent):
                 has_bank_or_post_office_account=has_bank_or_post_office_account,
                 is_unbanked=is_unbanked,
             )
+            if res_dict.get("status") != "error" and self._call_id:
+                db_mark_call_success(self._call_id, "eligibility_check")
             return json.dumps(res_dict, ensure_ascii=False)
 
         except Exception as err:
@@ -694,6 +705,8 @@ class Assistant(Agent):
                 language=language,
                 follow_up_pref=preferred_follow_up,
             )
+            if res.get("reference_id") and self._call_id:
+                db_mark_call_success(self._call_id, "escalation_created")
             logger.info("create_escalation tool succeeded: ref_id=%s", res["reference_id"])
             return json.dumps(res, ensure_ascii=False)
         except Exception as err:
@@ -702,6 +715,51 @@ class Assistant(Agent):
                 {
                     "status": "error",
                     "reason": "Could not save escalation request to database.",
+                },
+                ensure_ascii=False,
+            )
+
+    @function_tool
+    async def get_scheme_or_document_info(
+        self,
+        context: RunContext,
+        scheme_name: str,
+    ) -> str:
+        """Get official government scheme details and required documents when a user explicitly requests scheme or document information (e.g. PMJJBY, PMSBY, PMJDY, APY, Sukanya Samriddhi).
+
+        Args:
+            scheme_name: Name or code of the requested scheme (e.g. "PMJJBY", "PMSBY", "PMJDY").
+        """
+        logger.info("get_scheme_or_document_info requested for scheme: %s", scheme_name)
+        from schemes_data import SCHEMES_DATA, LAST_VERIFIED_DATE, OFFICIAL_SOURCES, normalize_scheme_input
+
+        norm_code = normalize_scheme_input(scheme_name, None) or scheme_name.upper().strip()
+        data = SCHEMES_DATA.get(norm_code)
+
+        if self._call_id:
+            db_mark_call_success(self._call_id, "scheme_or_doc_info")
+
+        if data:
+            return json.dumps(
+                {
+                    "status": "success",
+                    "scheme": data["scheme_full_name"],
+                    "annual_premium": data.get("annual_premium", "N/A"),
+                    "coverage": data.get("coverage", "N/A"),
+                    "account_requirement": data.get("account_requirement", "N/A"),
+                    "official_source": data.get("official_source", OFFICIAL_SOURCES.get("DFS_PORTAL")),
+                    "last_verified": LAST_VERIFIED_DATE,
+                },
+                ensure_ascii=False,
+            )
+        else:
+            return json.dumps(
+                {
+                    "status": "success",
+                    "scheme": scheme_name,
+                    "info": f"Official details for {scheme_name} can be verified on official Government portals.",
+                    "official_source": OFFICIAL_SOURCES.get("DFS_PORTAL"),
+                    "last_verified": LAST_VERIFIED_DATE,
                 },
                 ensure_ascii=False,
             )
@@ -754,10 +812,10 @@ async def my_agent(ctx: JobContext):
         "room": ctx.room.name,
     }
 
-    # Create the assistant instance before session.start() so we can set the
-    # user_id after ctx.connect() (safeguard 3: user_id from LiveKit context).
+    call_id = f"call_{uuid.uuid4().hex}"
     assistant = Assistant()
     assistant.set_room(ctx.room)
+    assistant.set_call_id(call_id)
 
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
@@ -806,44 +864,54 @@ async def my_agent(ctx: JobContext):
         ),
     )
 
-    # Start the session, initializing the voice pipeline with standard WebRTC audio
-    await session.start(
-        agent=assistant,
-        room=ctx.room,
-    )
-
-    # Join the room and connect to the user
-    await ctx.connect()
-
-    # ── Safeguard 3: Derive user_id from LiveKit participant identity ─────────
-    # The user joined before the agent was dispatched, so remote_participants
-    # should already contain the caller's entry at this point.
-    user_id: str | None = next(
-        (p.identity for p in ctx.room.remote_participants.values() if p.identity),
-        None,
-    )
-
-    if user_id:
-        logger.info(
-            "LiveKit participant identity will be used as memory key (%.8s...)", user_id
-        )
-        await assistant.set_user_id(user_id)
-    else:
-        logger.warning(
-            "No remote participant identity found — memory tools inactive for this session"
+    try:
+        # Start the session, initializing the voice pipeline with standard WebRTC audio
+        await session.start(
+            agent=assistant,
+            room=ctx.room,
         )
 
-    # ── Day 6: Outbound Session Detection & Auto-Greeting ────────────────────
-    is_outbound = any(
-        p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-        or p.attributes.get("call_type") == "outbound"
-        for p in ctx.room.remote_participants.values()
-    ) or "outbound" in ctx.room.name.lower()
+        # Join the room and connect to the user
+        await ctx.connect()
 
-    if is_outbound:
-        logger.info("Outbound call session detected (room=%s) — enabling Day 6 outbound prompt & greeting", ctx.room.name)
-        await assistant.enable_outbound_mode()
-        await session.generate_reply()
+        # ── Safeguard 3: Derive user_id from LiveKit participant identity ─────────
+        user_id: str | None = next(
+            (p.identity for p in ctx.room.remote_participants.values() if p.identity),
+            None,
+        )
+
+        if user_id:
+            logger.info(
+                "LiveKit participant identity will be used as memory key (%.8s...)", user_id
+            )
+            await assistant.set_user_id(user_id)
+        else:
+            logger.warning(
+                "No remote participant identity found — memory tools inactive for this session"
+            )
+
+        # ── Day 6: Outbound Session Detection & Auto-Greeting ────────────────────
+        is_outbound = any(
+            p.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+            or p.attributes.get("call_type") == "outbound"
+            for p in ctx.room.remote_participants.values()
+        ) or "outbound" in ctx.room.name.lower()
+
+        # ── Day 8: Record call start in SQLite ────────────────────────────────
+        channel = "SIP Outbound" if is_outbound else "Browser"
+        db_start_call(
+            call_id=call_id,
+            room_name=ctx.room.name,
+            user_id=user_id or "anonymous",
+            channel=channel,
+        )
+
+        if is_outbound:
+            logger.info("Outbound call session detected (room=%s) — enabling Day 6 outbound prompt & greeting", ctx.room.name)
+            await assistant.enable_outbound_mode()
+            await session.generate_reply()
+    finally:
+        db_end_call(call_id)
 
 
 

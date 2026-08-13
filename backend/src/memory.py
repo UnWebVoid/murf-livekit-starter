@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS escalations (
     follow_up_pref   TEXT NOT NULL DEFAULT 'not specified',
     created_at       TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS calls (
+    call_id          TEXT PRIMARY KEY,
+    room_name        TEXT NOT NULL,
+    user_id          TEXT NOT NULL,
+    channel          TEXT NOT NULL DEFAULT 'Browser',
+    start_time       TEXT NOT NULL,
+    end_time         TEXT,
+    duration_seconds INTEGER DEFAULT 0,
+    outcome          TEXT NOT NULL DEFAULT 'failed',
+    success_type     TEXT
+);
 """
 
 # Approved keys inside the 'facts' JSON blob.
@@ -314,4 +326,161 @@ def db_update_escalation_status(reference_id: str, status: str) -> bool:
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Day 8 Call Analytics Storage & Metrics API
+# ---------------------------------------------------------------------------
+
+
+def db_start_call(
+    call_id: str,
+    room_name: str,
+    user_id: str,
+    channel: str = "Browser",
+) -> dict:
+    """Record initial call session start in SQLite database.
+
+    Initial state is 'failed' until an explicit success condition is met.
+    A unique call_id (UUID) guarantees 1 session = 1 row in SQLite.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    clean_channel = "SIP Outbound" if "sip" in channel.lower() or "outbound" in channel.lower() else "Browser"
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO calls (call_id, room_name, user_id, channel, start_time, outcome)
+            VALUES (?, ?, ?, ?, ?, 'failed')
+            ON CONFLICT(call_id) DO UPDATE SET
+                room_name  = excluded.room_name,
+                user_id    = excluded.user_id,
+                channel    = excluded.channel,
+                start_time = excluded.start_time
+            """,
+            (call_id, room_name, user_id, clean_channel, now),
+        )
+        conn.commit()
+
+    logger.info("Call started call_id=%s room=%s channel=%s user_id=%.8s...", call_id, room_name, clean_channel, user_id)
+    return {
+        "call_id": call_id,
+        "room_name": room_name,
+        "user_id": user_id,
+        "channel": clean_channel,
+        "start_time": now,
+        "outcome": "failed",
+        "success_type": None,
+    }
+
+
+def db_mark_call_success(call_id: str, success_type: str) -> bool:
+    """Mark a call session outcome as 'success' when an explicit completion condition occurs.
+
+    Allowed success_types:
+    - 'eligibility_check': user completes scheme eligibility evaluation
+    - 'scheme_or_doc_info': user explicitly requests and receives scheme/doc information
+    - 'escalation_created': user successfully creates human-help escalation
+    """
+    valid_types = {"eligibility_check", "scheme_or_doc_info", "escalation_created"}
+    if success_type not in valid_types:
+        logger.warning("db_mark_call_success: Invalid success_type '%s'", success_type)
+        return False
+
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE calls SET outcome = 'success', success_type = ? WHERE call_id = ?",
+            (success_type, call_id),
+        )
+        conn.commit()
+        success = cur.rowcount > 0
+
+    if success:
+        logger.info("Call marked SUCCESS call_id=%s type=%s", call_id, success_type)
+    return success
+
+
+def db_end_call(call_id: str) -> bool:
+    """Record call disconnect/teardown timestamp and total duration in seconds."""
+    now_dt = datetime.now(timezone.utc)
+    now_str = now_dt.isoformat()
+
+    with _connect() as conn:
+        row = conn.execute("SELECT start_time FROM calls WHERE call_id = ?", (call_id,)).fetchone()
+        if not row or not row["start_time"]:
+            return False
+
+        try:
+            start_dt = datetime.fromisoformat(row["start_time"])
+            duration = max(0, int((now_dt - start_dt).total_seconds()))
+        except Exception:
+            duration = 0
+
+        cur = conn.execute(
+            "UPDATE calls SET end_time = ?, duration_seconds = ? WHERE call_id = ?",
+            (now_str, duration, call_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def db_get_analytics_summary() -> dict:
+    """Return aggregated real-call analytics metrics from SQLite."""
+    with _connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
+        success = conn.execute("SELECT COUNT(*) FROM calls WHERE outcome = 'success'").fetchone()[0]
+        failed = conn.execute("SELECT COUNT(*) FROM calls WHERE outcome = 'failed'").fetchone()[0]
+
+        type_rows = conn.execute(
+            "SELECT success_type, COUNT(*) as cnt FROM calls WHERE outcome = 'success' GROUP BY success_type"
+        ).fetchall()
+        by_type = {row["success_type"]: row["cnt"] for row in type_rows if row["success_type"]}
+
+        channel_rows = conn.execute(
+            "SELECT channel, COUNT(*) as cnt FROM calls GROUP BY channel"
+        ).fetchall()
+        by_channel = {row["channel"]: row["cnt"] for row in channel_rows}
+
+    rate = round((success / total * 100), 1) if total > 0 else 0.0
+
+    return {
+        "total_calls": total,
+        "successful_calls": success,
+        "failed_calls": failed,
+        "success_rate": rate,
+        "by_success_type": by_type,
+        "by_channel": by_channel,
+    }
+
+
+def db_get_recent_calls(limit: int = 50) -> list[dict]:
+    """Return recent calls sorted by start_time DESC containing only safe metadata.
+
+    Excludes transcripts, PINs, OTPs, passwords, and sensitive personal information.
+    """
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT call_id, room_name, user_id, channel, start_time, end_time,
+                   duration_seconds, outcome, success_type
+            FROM calls
+            ORDER BY start_time DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    result = []
+    for r in rows:
+        d = dict(r)
+        # Ensure user_id is presented as safe truncated identity if UUID
+        uid = d.get("user_id", "")
+        if len(uid) > 12 and "-" in uid:
+            d["user_id_safe"] = f"{uid[:8]}..."
+        else:
+            d["user_id_safe"] = uid
+        result.append(d)
+
+    return result
+
 
