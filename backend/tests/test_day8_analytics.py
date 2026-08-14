@@ -11,14 +11,13 @@ Tests:
 """
 
 import uuid
-import pytest
-from datetime import datetime, timezone
+
 from memory import (
-    db_start_call,
-    db_mark_call_success,
     db_end_call,
     db_get_analytics_summary,
     db_get_recent_calls,
+    db_mark_call_success,
+    db_start_call,
 )
 
 

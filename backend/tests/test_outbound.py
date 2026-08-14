@@ -1,5 +1,6 @@
 import pytest
-from agent import Assistant, OUTBOUND_SYSTEM_PROMPT
+
+from agent import Assistant
 
 
 @pytest.mark.asyncio

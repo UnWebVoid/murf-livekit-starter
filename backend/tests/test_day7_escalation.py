@@ -18,6 +18,7 @@ Tests:
 """
 
 import json
+
 import pytest
 from livekit.agents import AgentSession, inference, llm
 
@@ -126,7 +127,7 @@ async def test_agent_fraud_escalation_with_user_permission():
         await session.start(assistant)
 
         # Turn 1: User reports fraud
-        result1 = await session.run(
+        await session.run(
             user_input="Someone deducted 5000 rupees from my bank account via fraudulent UPI request! Can you create a help request for me?"
         )
 

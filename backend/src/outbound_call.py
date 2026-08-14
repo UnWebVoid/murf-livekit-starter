@@ -9,8 +9,9 @@ import asyncio
 import logging
 import os
 import sys
-from dotenv import load_dotenv
+
 import livekit.api as api
+from dotenv import load_dotenv
 
 logger = logging.getLogger("outbound_call")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

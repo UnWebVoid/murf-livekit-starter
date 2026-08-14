@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -13,14 +14,13 @@ from livekit.agents import (
     RunContext,
     cli,
     function_tool,
-    room_io,
+    llm,
     tokenize,
 )
 from livekit.agents.voice.agent_session import SessionConnectOptions
-from livekit.plugins import deepgram, google, murf, noise_cancellation, silero
+from livekit.plugins import deepgram, google, murf, silero
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
-import uuid
 from memory import (
     db_create_escalation,
     db_delete_user,
@@ -30,7 +30,14 @@ from memory import (
     db_save_user,
     db_start_call,
 )
-from schemes_data import LAST_VERIFIED_DATE, evaluate_scheme_eligibility
+from prompt import SCHEME_SPECIALIST_SYSTEM_PROMPT as BASE_SCHEME_SPECIALIST_PROMPT
+from schemes_data import (
+    LAST_VERIFIED_DATE,
+    OFFICIAL_SOURCES,
+    SCHEMES_DATA,
+    evaluate_scheme_eligibility,
+    normalize_scheme_input,
+)
 
 logger = logging.getLogger("agent")
 
@@ -39,14 +46,15 @@ load_dotenv(".env.local")
 SYSTEM_PROMPT = """1. IDENTITY
 - Name: Jan Sathi (जन साथी)
 - Role: AI voice assistant for Indian financial awareness.
-- Purpose: Help users understand government schemes, banking, digital payments, financial literacy, and cyber safety.
+- Purpose: Help users understand banking, digital payments, financial literacy, loan calculations, cyber safety, and general financial awareness.
 - Personality: Warm, friendly, patient, respectful, trustworthy, and conversational.
 
 2. OBJECTIVES
 A successful conversation should:
-- Explain government financial schemes simply and clearly.
-- Help users understand eligibility, benefits, documents, and application process.
-- Promote safe digital banking and fraud awareness.
+- Explain general banking, digital payments (UPI, ATM, Mobile Banking), credit scores, and financial literacy clearly.
+- Calculate loan EMIs and fixed deposit returns accurately.
+- Promote safe digital banking and cyber fraud awareness.
+- Hand off detailed government scheme questions to the specialized Government Scheme Specialist.
 - Give clear, practical next steps whenever possible.
 
 3. KNOWLEDGE
@@ -167,33 +175,7 @@ FORGET REQUEST:
 
 WHEN TO CALL:
 - Call check_financial_scheme_eligibility ONLY when the user asks whether they qualify for, fit the basic criteria for, or should consider one of the supported financial schemes (PMJJBY, PMSBY, PMJDY).
-- Examples requiring the tool:
-  * "I'm 25 years old and have a bank account. Could I be eligible for PMJJBY?"
-  * "Can I get PMSBY accident insurance if I am 60 years old?"
-  * "Am I eligible for Jan Dhan Yojana if I don't have a bank account?"
-- Examples NOT requiring the tool:
-  * "What is insurance?"
-  * "What is PMJJBY?"
-  * "What is UPI?"
-  * Answer generic informational questions directly without invoking check_financial_scheme_eligibility unless an eligibility check is explicitly requested.
-
-CONVERSATIONAL INPUT COLLECTION:
-- The tool requires basic inputs (e.g. age for PMJJBY/PMSBY, bank account status).
-- If required information (like age) is missing, ask for it naturally before calling the tool.
-- If age or bank account status was already provided in the current conversation or from approved Day 4 memory, use it directly without re-asking.
-- NEVER ask for sensitive financial credentials (Aadhaar, PAN, account numbers, PIN, OTP, passwords).
-
-NATURAL SPOKEN RESPONSE FORMATTING:
-- NEVER read raw JSON or dict outputs to the user.
-- Explain the returned result naturally and concisely.
-- For potential matches, state: "Based on the information provided, you appear to meet the basic criteria for..." (never state it as a guaranteed official decision).
-- MANDATORY TRANSPARENCY: Always mention the verification date and local dataset source in natural phrasing:
-  "This result is based on a locally curated dataset from official Department of Financial Services information, last verified on August 10, 2026."
-- Recommend checking with their bank branch or official website before applying.
-
-FAILURE PATH HANDLING:
-- If the tool returns a status of "error", do NOT guess or hallucinate eligibility.
-- Say clearly: "I'm sorry, I couldn't access the scheme eligibility information right now, so I don't want to guess. Please try again shortly or check the official government source."
+- For detailed scheme questions, you can also transfer to the Government Scheme Specialist using transfer_to_scheme_specialist.
 
 10. DAY 7 HUMAN HELP / ESCALATION RULES (create_escalation)
 
@@ -220,11 +202,24 @@ Once `create_escalation` completes and returns a Reference ID:
 3. Explain that a human helper can review the request.
 4. Provide an honest next step (e.g. advise calling 1930 Cyber Crime Helpline or visiting bank branch if active fraud is suspected).
 5. DO NOT promise an immediate response or a specific response time.
+
+11. DAY 9 MULTI-AGENT HANDOFF TO GOVERNMENT SCHEME SPECIALIST (transfer_to_scheme_specialist)
+
+WHEN TO HAND OFF:
+- When the user asks detailed, in-depth questions about government welfare or financial schemes (e.g. detailed scheme rules, scheme eligibility evaluations for PMJJBY, PMSBY, PMJDY, APY, Sukanya Samriddhi, PM-KISAN, required application documents, or in-depth benefits).
+
+MANDATORY ANNOUNCEMENT BEFORE HANDOFF:
+Before or when calling `transfer_to_scheme_specialist`, you MUST clearly inform the caller:
+- Hindi (Devanagari): "मैं आपको हमारे सरकारी योजना विशेषज्ञ (Government Scheme Specialist) से कनेक्ट कर रहा हूँ। वे आपको इस योजना की पूरी जानकारी और पात्रता विस्तार से समझाएंगे।"
+- English: "I am connecting you to our Government Scheme Specialist. They will explain the scheme details and eligibility in depth."
+
+WHEN NOT TO HAND OFF:
+- Stay with Jan Sathi for general banking, digital payments (UPI, ATM, mobile banking), loan EMI calculations, FD return calculations, fraud/cyber security advice, memory management, and escalations.
 """
 
 OUTBOUND_SYSTEM_PROMPT = """
 
-11. OUTBOUND CALL INSTRUCTIONS (DAY 6 — PMJJBY SCHEME INFORMATION & REMINDER CALL)
+12. OUTBOUND CALL INSTRUCTIONS (DAY 6 — PMJJBY SCHEME INFORMATION & REMINDER CALL)
 You are placing an outbound phone call to a recipient regarding government financial/insurance schemes.
 
 MANDATORY FIRST TURN OPENING (APPLIES IMMEDIATELY WHEN CALL CONNECTS):
@@ -251,25 +246,338 @@ OPT-OUT PROCEDURE:
   3. The tool will disconnect the call cleanly.
 """
 
+SCHEME_SPECIALIST_SYSTEM_PROMPT = BASE_SCHEME_SPECIALIST_PROMPT
 
+
+class GovernmentSchemeSpecialist(Agent):
+    """Dedicated Government Scheme Specialist voice agent (Day 9).
+
+    Specializes in in-depth government scheme information, eligibility evaluations,
+    document requirements, and application procedures for Indian welfare & financial schemes.
+    """
+
+    def __init__(
+        self,
+        chat_ctx: llm.ChatContext | None = None,
+        user_id: str | None = None,
+        prewarmed_memory: dict | None = None,
+        room: rtc.Room | None = None,
+        call_id: str | None = None,
+        is_outbound: bool = False,
+    ) -> None:
+        super().__init__(
+            instructions=SCHEME_SPECIALIST_SYSTEM_PROMPT,
+            chat_ctx=chat_ctx if chat_ctx is not None else None,
+        )
+        self._user_id: str | None = user_id
+        self._prewarmed_memory: dict | None = prewarmed_memory
+        self._room: rtc.Room | None = room
+        self._call_id: str | None = call_id
+        self._is_outbound: bool = is_outbound
+        self._update_instructions_with_memory()
+
+    def set_call_id(self, call_id: str) -> None:
+        """Store unique session call_id for Day 8 call analytics tracking."""
+        self._call_id = call_id
+
+    def set_room(self, room: rtc.Room) -> None:
+        """Store the LiveKit room instance for session control."""
+        self._room = room
+
+    async def set_user_id(self, user_id: str) -> None:
+        """Inject the LiveKit participant identity as the memory key."""
+        self._user_id = user_id
+        self._prewarmed_memory = db_lookup_user(user_id)
+        self._update_instructions_with_memory()
+        await self.update_instructions(self._instructions)
+
+    def _update_instructions_with_memory(self) -> None:
+        """Update system instructions with caller memory context."""
+        base_inst = SCHEME_SPECIALIST_SYSTEM_PROMPT
+        if self._prewarmed_memory:
+            memory_summary = (
+                f"\n\nCURRENT USER MEMORY CONTEXT:\n"
+                f"- Found existing record: Yes\n"
+                f"- User Name: {self._prewarmed_memory.get('name')}\n"
+                f"- Preferred Language: {self._prewarmed_memory.get('language_pref')}\n"
+                f"- Saved Facts: {json.dumps(self._prewarmed_memory.get('facts', {}), ensure_ascii=False)}\n"
+                f"- Last interaction: {self._prewarmed_memory.get('last_interaction')}\n"
+            )
+        else:
+            memory_summary = "\n\nCURRENT USER MEMORY CONTEXT:\n- Found existing record: No (new caller).\n"
+        self._instructions = base_inst + memory_summary
+
+    async def on_enter(self) -> None:
+        """Called when handoff to Government Scheme Specialist completes.
+
+        Immediately generates speech so the specialist introduces itself and answers
+        the pending scheme inquiry without forcing the user to repeat themselves.
+        """
+        logger.info(
+            "GovernmentSchemeSpecialist.on_enter: Handoff complete (user_id=%.8s..., call_id=%s). Activating specialist voice response.",
+            self._user_id or "unknown",
+            self._call_id or "unknown",
+        )
+        try:
+            # Trigger immediate LLM generation and spoken response from the specialist
+            self.session.generate_reply()
+            logger.info("GovernmentSchemeSpecialist.on_enter: session.generate_reply() queued successfully.")
+        except Exception as err:
+            logger.error("GovernmentSchemeSpecialist.on_enter failed to trigger generate_reply: %s", err, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # SCHEME SPECIALIST TOOLS (Day 5, 7, 8, 9)
+    # ------------------------------------------------------------------
+
+    @function_tool
+    async def check_financial_scheme_eligibility(
+        self,
+        context: RunContext,
+        scheme_name: str | None = None,
+        category_of_interest: str | None = None,
+        age: int | None = None,
+        has_bank_or_post_office_account: bool | None = None,
+        is_unbanked: bool | None = None,
+        simulate_failure: bool = False,
+    ) -> str:
+        """Check potential basic eligibility for Indian government financial schemes (PMJJBY, PMSBY, PMJDY).
+
+        Args:
+            scheme_name: Name of scheme if requested (e.g. "PMJJBY", "PMSBY", "PMJDY").
+            category_of_interest: Category of interest if scheme name is omitted (e.g. "life_insurance", "accident_insurance", "basic_banking").
+            age: Age of applicant in years (required for PMJJBY/PMSBY).
+            has_bank_or_post_office_account: Whether the user holds an individual savings account in a participating bank or Post Office.
+            is_unbanked: Whether the user is currently unbanked (relevant for PMJDY).
+            simulate_failure: Internal backend test flag to trigger failure path testing.
+        """
+        logger.info(
+            "GovernmentSchemeSpecialist.check_financial_scheme_eligibility: scheme=%s, category=%s, age=%s, account=%s, unbanked=%s, simulate_failure=%s",
+            scheme_name,
+            category_of_interest,
+            age,
+            has_bank_or_post_office_account,
+            is_unbanked,
+            simulate_failure,
+        )
+
+        try:
+            if simulate_failure:
+                raise RuntimeError("Simulated dataset access failure for testing error path")
+
+            res_dict = evaluate_scheme_eligibility(
+                scheme_name=scheme_name,
+                category_of_interest=category_of_interest,
+                age=age,
+                has_bank_or_post_office_account=has_bank_or_post_office_account,
+                is_unbanked=is_unbanked,
+            )
+            if res_dict.get("status") != "error" and self._call_id:
+                db_mark_call_success(self._call_id, "eligibility_check")
+            return json.dumps(res_dict, ensure_ascii=False)
+
+        except Exception as err:
+            logger.error("check_financial_scheme_eligibility failed: %s", err, exc_info=True)
+            failure_dict = {
+                "status": "error",
+                "scheme": scheme_name or category_of_interest or "unknown",
+                "reason": "Unable to access scheme eligibility dataset at this time.",
+                "official_source": "https://www.financialservices.gov.in/schemes-and-services",
+                "last_verified": LAST_VERIFIED_DATE,
+                "disclaimer": "This system could not verify eligibility right now. Please check official government portals directly.",
+            }
+            return json.dumps(failure_dict, ensure_ascii=False)
+
+    @function_tool
+    async def get_scheme_or_document_info(
+        self,
+        context: RunContext,
+        scheme_name: str,
+    ) -> str:
+        """Get official government scheme details and required documents when a user explicitly requests scheme or document information (e.g. PMJJBY, PMSBY, PMJDY, APY, Sukanya Samriddhi).
+
+        Args:
+            scheme_name: Name or code of the requested scheme (e.g. "PMJJBY", "PMSBY", "PMJDY").
+        """
+        logger.info("GovernmentSchemeSpecialist.get_scheme_or_document_info requested for scheme: %s", scheme_name)
+        norm_code = normalize_scheme_input(scheme_name, None) or scheme_name.upper().strip()
+        data = SCHEMES_DATA.get(norm_code)
+
+        if self._call_id:
+            db_mark_call_success(self._call_id, "scheme_or_doc_info")
+
+        if data:
+            return json.dumps(
+                {
+                    "status": "success",
+                    "scheme": data["scheme_full_name"],
+                    "annual_premium": data.get("annual_premium", "N/A"),
+                    "coverage": data.get("coverage", "N/A"),
+                    "account_requirement": data.get("account_requirement", "N/A"),
+                    "official_source": data.get("official_source", OFFICIAL_SOURCES.get("DFS_PORTAL")),
+                    "last_verified": LAST_VERIFIED_DATE,
+                },
+                ensure_ascii=False,
+            )
+        else:
+            return json.dumps(
+                {
+                    "status": "success",
+                    "scheme": scheme_name,
+                    "info": f"Official details for {scheme_name} can be verified on official Government portals.",
+                    "official_source": OFFICIAL_SOURCES.get("DFS_PORTAL"),
+                    "last_verified": LAST_VERIFIED_DATE,
+                },
+                ensure_ascii=False,
+            )
+
+    @function_tool
+    async def save_user_memory(
+        self,
+        context: RunContext,
+        user_confirmed: bool,
+        name: str | None = None,
+        language_preference: str | None = None,
+        schemes_checked: list[str] | None = None,
+        eligibility_answers: dict[str, str] | None = None,
+        topics_asked: list[str] | None = None,
+    ) -> str:
+        """Save or update memory for the current caller from the Specialist."""
+        if not user_confirmed:
+            return "Save cancelled: explicit user confirmation is required."
+        if not self._user_id:
+            return "Cannot save: user identity is not available for this session."
+
+        existing = db_lookup_user(self._user_id)
+        existing_facts: dict = existing["facts"] if existing else {}
+
+        merged_facts: dict = {
+            "schemes_checked": list(existing_facts.get("schemes_checked", [])),
+            "eligibility_answers": dict(existing_facts.get("eligibility_answers", {})),
+            "topics_asked": list(existing_facts.get("topics_asked", [])),
+        }
+
+        if schemes_checked:
+            merged_facts["schemes_checked"] = list(
+                set(merged_facts["schemes_checked"]) | set(schemes_checked)
+            )
+        if eligibility_answers:
+            merged_facts["eligibility_answers"].update(eligibility_answers)
+        if topics_asked:
+            merged_facts["topics_asked"] = list(
+                set(merged_facts["topics_asked"]) | set(topics_asked)
+            )
+
+        resolved_name = name or (existing["name"] if existing else None)
+        resolved_lang = language_preference or (existing["language_pref"] if existing else "hi")
+
+        db_save_user(
+            user_id=self._user_id,
+            name=resolved_name,
+            language_pref=resolved_lang,
+            facts=merged_facts,
+        )
+        self._prewarmed_memory = db_lookup_user(self._user_id)
+        return "Memory saved successfully."
+
+    @function_tool
+    async def create_escalation(
+        self,
+        context: RunContext,
+        user_confirmed: bool,
+        what_happened: str,
+        what_checked: str,
+        urgency: str = "high",
+        language: str = "hi",
+        preferred_follow_up: str = "not specified",
+    ) -> str:
+        """Create a human help / escalation request record when user explicitly permits."""
+        if not user_confirmed:
+            return json.dumps(
+                {
+                    "status": "refused",
+                    "reason": "Escalation cancelled: explicit user permission was not granted.",
+                },
+                ensure_ascii=False,
+            )
+
+        caller_name = (
+            self._prewarmed_memory.get("name")
+            if self._prewarmed_memory and self._prewarmed_memory.get("name")
+            else "Anonymous Caller"
+        )
+        effective_user_id = self._user_id or "unknown_caller"
+
+        try:
+            res = db_create_escalation(
+                user_id=effective_user_id,
+                what_happened=what_happened,
+                what_checked=what_checked,
+                who_needs_help=caller_name,
+                urgency=urgency,
+                language=language,
+                follow_up_pref=preferred_follow_up,
+            )
+            if res.get("reference_id") and self._call_id:
+                db_mark_call_success(self._call_id, "escalation_created")
+            return json.dumps(res, ensure_ascii=False)
+        except Exception as err:
+            logger.error("GovernmentSchemeSpecialist create_escalation error: %s", err, exc_info=True)
+            return json.dumps(
+                {
+                    "status": "error",
+                    "reason": "Could not save escalation request to database.",
+                },
+                ensure_ascii=False,
+            )
+
+    @function_tool
+    async def transfer_to_jan_sathi(
+        self,
+        context: RunContext,
+        reason: str = "general inquiry",
+    ) -> Agent:
+        """Transfer the caller back to the main Jan Sathi assistant for general banking, loan calculators, digital payments, or non-scheme questions.
+
+        Args:
+            reason: Reason for transferring back (e.g. 'loan EMI calculation', 'UPI inquiry').
+        """
+        logger.info("transfer_to_jan_sathi: Transferring back to main Assistant (reason=%s)", reason)
+        history = (
+            context.session.history.copy()
+            if context and hasattr(context, "session") and context.session
+            else (self.chat_ctx.copy() if hasattr(self, "chat_ctx") else None)
+        )
+        main_agent = Assistant(chat_ctx=history)
+        main_agent._user_id = self._user_id
+        main_agent._prewarmed_memory = self._prewarmed_memory
+        main_agent._room = self._room
+        main_agent._call_id = self._call_id
+        main_agent._is_outbound = self._is_outbound
+        main_agent._is_handoff_destination = True
+        main_agent._update_instructions_with_memory()
+        return main_agent
 
 
 class Assistant(Agent):
-    """Jan Sathi voice agent with persistent memory (Day 4).
+    """Jan Sathi voice agent with persistent memory (Day 4) and multi-agent handoff (Day 9).
 
     The user_id is NEVER accepted from the LLM. It is derived exclusively from
     the LiveKit participant identity and injected via set_user_id() after the
     room connection is established (safeguard 3).
     """
 
-    def __init__(self) -> None:
-        super().__init__(instructions=SYSTEM_PROMPT)
+    def __init__(self, chat_ctx: llm.ChatContext | None = None) -> None:
+        super().__init__(
+            instructions=SYSTEM_PROMPT,
+            chat_ctx=chat_ctx if chat_ctx is not None else None,
+        )
         # Set by my_agent() after ctx.connect() from LiveKit context — not from LLM.
         self._user_id: str | None = None
         self._prewarmed_memory: dict | None = None
         self._room: rtc.Room | None = None
         self._is_outbound: bool = False
         self._call_id: str | None = None
+        self._is_handoff_destination: bool = False
 
     def set_call_id(self, call_id: str) -> None:
         """Store unique session call_id for Day 8 call analytics tracking."""
@@ -282,9 +590,27 @@ class Assistant(Agent):
     async def enable_outbound_mode(self) -> None:
         """Enable Day 6 outbound prompt rules for phone call sessions."""
         self._is_outbound = True
-        base_inst = self._instructions if hasattr(self, "_instructions") else SYSTEM_PROMPT
-        await self.update_instructions(base_inst + OUTBOUND_SYSTEM_PROMPT)
+        self._update_instructions_with_memory()
+        await self.update_instructions(self._instructions)
 
+    def _update_instructions_with_memory(self) -> None:
+        """Update system instructions with caller memory context."""
+        base_inst = SYSTEM_PROMPT + OUTBOUND_SYSTEM_PROMPT if self._is_outbound else SYSTEM_PROMPT
+        if self._prewarmed_memory:
+            memory_summary = (
+                f"\n\n10. CURRENT USER MEMORY CONTEXT:\n"
+                f"- Found existing record: Yes\n"
+                f"- User Name: {self._prewarmed_memory.get('name')}\n"
+                f"- Preferred Language: {self._prewarmed_memory.get('language_pref')}\n"
+                f"- Saved Facts: {json.dumps(self._prewarmed_memory.get('facts', {}), ensure_ascii=False)}\n"
+                f"- Last interaction: {self._prewarmed_memory.get('last_interaction')}\n"
+            )
+        else:
+            memory_summary = (
+                "\n\n10. CURRENT USER MEMORY CONTEXT:\n"
+                "- Found existing record: No (new caller).\n"
+            )
+        self._instructions = base_inst + memory_summary
 
     async def set_user_id(self, user_id: str) -> None:
         """Inject the LiveKit participant identity as the memory key.
@@ -297,24 +623,65 @@ class Assistant(Agent):
         self._prewarmed_memory = db_lookup_user(user_id)
         if self._prewarmed_memory:
             logger.info("Memory pre-warmed for user_id=%.8s... (name='%s')", user_id, self._prewarmed_memory.get("name"))
-            memory_summary = (
-                f"\n\n10. CURRENT USER MEMORY CONTEXT:\n"
-                f"- Found existing record: Yes\n"
-                f"- User Name: {self._prewarmed_memory.get('name')}\n"
-                f"- Preferred Language: {self._prewarmed_memory.get('language_pref')}\n"
-                f"- Saved Facts: {json.dumps(self._prewarmed_memory.get('facts', {}), ensure_ascii=False)}\n"
-                f"- Last interaction: {self._prewarmed_memory.get('last_interaction')}\n"
-            )
         else:
             logger.info("Memory context: participant identity set (%.8s...), no existing record", user_id)
-            memory_summary = (
-                f"\n\n10. CURRENT USER MEMORY CONTEXT:\n"
-                f"- Found existing record: No (new caller).\n"
-            )
-        
-        base_inst = SYSTEM_PROMPT + OUTBOUND_SYSTEM_PROMPT if self._is_outbound else SYSTEM_PROMPT
-        await self.update_instructions(base_inst + memory_summary)
+        self._update_instructions_with_memory()
+        await self.update_instructions(self._instructions)
 
+    async def on_enter(self) -> None:
+        """Called when entering Assistant."""
+        logger.info("Assistant.on_enter: user_id=%.8s..., is_handoff=%s", self._user_id or "unknown", self._is_handoff_destination)
+        if self._is_handoff_destination:
+            try:
+                self.session.generate_reply()
+                logger.info("Assistant.on_enter: generate_reply triggered after handoff back.")
+            except Exception as err:
+                logger.error("Assistant.on_enter generate_reply error: %s", err)
+
+    # ------------------------------------------------------------------
+    # DAY 9 MULTI-AGENT HANDOFF TOOL
+    # ------------------------------------------------------------------
+
+    @function_tool
+    async def transfer_to_scheme_specialist(
+        self,
+        context: RunContext,
+        reason_or_query: str,
+    ) -> Agent:
+        """Connect the caller to the Government Scheme Specialist for in-depth government scheme queries, detailed eligibility evaluation, documentation requirements, and scheme benefits.
+
+        CALL THIS TOOL when the user asks detailed questions about government schemes (e.g. PMJJBY, PMSBY, PMJDY, APY, Sukanya Samriddhi) or requests an eligibility check.
+
+        Before calling this tool, inform the user clearly that you are connecting them to the Government Scheme Specialist.
+
+        Args:
+            reason_or_query: The specific scheme or question the user asked about (e.g. 'PMJJBY eligibility check', 'Sukanya Samriddhi documents').
+        """
+        logger.info(
+            "transfer_to_scheme_specialist invoked: reason_or_query='%s' (user_id=%.8s..., call_id=%s)",
+            reason_or_query,
+            self._user_id or "unknown",
+            self._call_id or "unknown",
+        )
+        history = (
+            context.session.history.copy()
+            if context and hasattr(context, "session") and context.session
+            else (self.chat_ctx.copy() if hasattr(self, "chat_ctx") else None)
+        )
+        specialist = GovernmentSchemeSpecialist(
+            chat_ctx=history,
+            user_id=self._user_id,
+            prewarmed_memory=self._prewarmed_memory,
+            room=self._room,
+            call_id=self._call_id,
+            is_outbound=self._is_outbound,
+        )
+        logger.info(
+            "transfer_to_scheme_specialist: Successfully instantiated %s with %d conversation history items.",
+            specialist.id,
+            len(history.items) if history else 0,
+        )
+        return specialist
 
     # ------------------------------------------------------------------
     # MEMORY TOOLS (Day 4)
@@ -390,7 +757,6 @@ class Assistant(Agent):
                                  (e.g. {"age": "35", "has_bank_account": "yes"}).
             topics_asked: Financial topics discussed (e.g. ["credit score", "EMI"]).
         """
-        # ── Safeguard 1: explicit consent required at function level ──────────
         if not user_confirmed:
             logger.info("save_user_memory: refused — user_confirmed=False")
             return (
@@ -398,16 +764,13 @@ class Assistant(Agent):
                 "Do NOT save any information without consent."
             )
 
-        # ── Safeguard 3: user_id from LiveKit context only ────────────────────
         if not self._user_id:
             logger.warning("save_user_memory: user_id not set")
             return "Cannot save: user identity is not available for this session."
 
-        # ── Load existing record to merge facts ───────────────────────────────
         existing = db_lookup_user(self._user_id)
         existing_facts: dict = existing["facts"] if existing else {}
 
-        # ── Merge only approved fact keys (safeguard 2 enforced in memory.py) ─
         merged_facts: dict = {
             "schemes_checked": list(existing_facts.get("schemes_checked", [])),
             "eligibility_answers": dict(existing_facts.get("eligibility_answers", {})),
@@ -428,7 +791,6 @@ class Assistant(Agent):
         resolved_name = name or (existing["name"] if existing else None)
         resolved_lang = language_preference or (existing["language_pref"] if existing else "hi")
 
-        # ── Persist (storage layer strips any non-approved keys) ─────────────
         db_save_user(
             user_id=self._user_id,
             name=resolved_name,
@@ -478,7 +840,7 @@ class Assistant(Agent):
         )
 
     # ------------------------------------------------------------------
-    # EXISTING FINANCIAL TOOLS (Days 1–3 — unchanged)
+    # EXISTING FINANCIAL TOOLS (Days 1-3)
     # ------------------------------------------------------------------
 
     @function_tool
@@ -554,11 +916,6 @@ class Assistant(Agent):
     ) -> str:
         """Check potential basic eligibility for Indian government financial schemes (PMJJBY, PMSBY, PMJDY).
 
-        CALL THIS TOOL ONLY when the user explicitly asks whether they qualify for, fit basic criteria for,
-        or should consider a supported scheme (PMJJBY life insurance, PMSBY accident insurance, PMJDY basic banking).
-
-        DO NOT call this tool for generic informational questions like 'What is PMJJBY?', 'What is insurance?', or 'What is UPI?'.
-
         Args:
             scheme_name: Name of scheme if requested (e.g. "PMJJBY", "PMSBY", "PMJDY").
             category_of_interest: Category of interest if scheme name is omitted (e.g. "life_insurance", "accident_insurance", "basic_banking").
@@ -622,11 +979,10 @@ class Assistant(Agent):
                 except Exception as err:
                     logger.warning("Error disconnecting room: %s", err)
 
-            asyncio.create_task(_disconnect_room())
+            task = asyncio.create_task(_disconnect_room())
+            _ = task
 
         return "Understood. I won't continue this call. Thank you, and have a good day."
-
-
 
     @function_tool
     async def report_fraud_guidance(
@@ -660,15 +1016,6 @@ class Assistant(Agent):
         preferred_follow_up: str = "not specified",
     ) -> str:
         """Create a human help / escalation request record when user explicitly permits (Day 7).
-
-        SAFEGUARD — EXPLICIT PERMISSION REQUIRED:
-        This tool MUST ONLY be called after explaining to the caller that a short summary
-        will be shared with a human helper and obtaining explicit user permission (user_confirmed=True).
-        If user_confirmed is False, the escalation is refused.
-
-        PRIVACY SAFEGUARD:
-        Never include passwords, OTPs, PINs, bank account numbers, or card details in any arguments.
-        Inputs are automatically sanitized before storage.
 
         Args:
             user_confirmed: MUST be True. The caller has explicitly consented to creating an escalation request.
@@ -731,8 +1078,6 @@ class Assistant(Agent):
             scheme_name: Name or code of the requested scheme (e.g. "PMJJBY", "PMSBY", "PMJDY").
         """
         logger.info("get_scheme_or_document_info requested for scheme: %s", scheme_name)
-        from schemes_data import SCHEMES_DATA, LAST_VERIFIED_DATE, OFFICIAL_SOURCES, normalize_scheme_input
-
         norm_code = normalize_scheme_input(scheme_name, None) or scheme_name.upper().strip()
         data = SCHEMES_DATA.get(norm_code)
 
@@ -763,7 +1108,6 @@ class Assistant(Agent):
                 },
                 ensure_ascii=False,
             )
-
 
 
 class HindiSentenceTokenizer(tokenize.basic.SentenceTokenizer):
@@ -819,14 +1163,11 @@ async def my_agent(ctx: JobContext):
 
     # Set up a voice AI pipeline using Murf Falcon, Gemini, Deepgram, and the LiveKit turn detector
     session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears
         stt=deepgram.STT(model="nova-3"),
-        # Large Language Model (LLM) using active gemini-3.5-flash-lite
         llm=google.LLM(
             model="gemini-3.5-flash-lite",
             temperature=0,
         ),
-        # Text-to-speech (TTS) is your agent's voice (Murf Falcon)
         tts=murf.TTS(
             voice="pooja",
             locale="en-IN",
@@ -835,16 +1176,12 @@ async def my_agent(ctx: JobContext):
             text_pacing=True,
             min_buffer_size=5,
         ),
-        # VAD and turn detection
         turn_detection=MultilingualModel(),
         vad=ctx.proc.userdata["vad"],
         preemptive_generation=False,
-        # Allow agent to retry TTS and LLM more aggressively on transient failures
         allow_interruptions=True,
-        # Faster turn detection (snappier response start after user stops speaking)
         min_endpointing_delay=0.3,
         max_endpointing_delay=3.0,
-        # Retry failed LLM/TTS/STT calls quickly instead of default 2s wait
         conn_options=SessionConnectOptions(
             llm_conn_options=APIConnectOptions(
                 max_retry=5,
@@ -912,7 +1249,6 @@ async def my_agent(ctx: JobContext):
             await session.generate_reply()
     finally:
         db_end_call(call_id)
-
 
 
 if __name__ == "__main__":

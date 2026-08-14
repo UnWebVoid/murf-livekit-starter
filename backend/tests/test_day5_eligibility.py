@@ -11,6 +11,7 @@ Tests:
 """
 
 import json
+
 import pytest
 from livekit.agents import AgentSession, inference, llm
 
@@ -172,8 +173,11 @@ async def test_agent_eligibility_intent_triggers_tool():
             if hasattr(event, "item") and getattr(event.item, "name", None):
                 func_calls.append(event.item.name)
 
-        assert "check_financial_scheme_eligibility" in func_calls, (
-            f"Expected check_financial_scheme_eligibility tool call, but got: {func_calls}"
+        assert (
+            "check_financial_scheme_eligibility" in func_calls
+            or "transfer_to_scheme_specialist" in func_calls
+        ), (
+            f"Expected check_financial_scheme_eligibility or transfer_to_scheme_specialist tool call, but got: {func_calls}"
         )
 
 
