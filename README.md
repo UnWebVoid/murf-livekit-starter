@@ -1,290 +1,552 @@
-# Voice Agent Starter — Powered by Murf Falcon
+# 🇮🇳 Jan Sathi (जन साथी)
 
-Build a production voice AI agent in 5 minutes. Powered by the fastest TTS on the market - swap the system prompt to build anything from customer support to language tutors.
+### Your Voice. Your Guide. Your Saathi.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Murf Falcon](https://img.shields.io/badge/TTS-Murf%20Falcon-6366F1)](https://murf.ai/api/docs/text-to-speech/streaming) [![LiveKit](https://img.shields.io/badge/Transport-LiveKit-002cf2)](https://docs.livekit.io) [![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+Jan Sathi is a real-time AI voice assistant designed to help users navigate **Indian government schemes, financial services, digital payments, basic financial calculations, and cyber-safety information** through natural voice conversations.
 
----
+Built as part of **10 Days of Voice Agents — VoiceForBharat Edition**, Jan Sathi evolved from a basic voice assistant into a more complete agentic system with persistent memory, function tools, government scheme eligibility checks, outbound calling, human escalation, call analytics, and multi-agent handoffs.
 
-## Why Murf Falcon
-
-- **55ms model latency** - fastest production TTS
-- **130ms time-to-first-audio** across 10+ global regions
-- **$0.01/1000 characters** - up to 10x cheaper than alternatives
-- **150+ voices** across 35+ languages
-- **99.38% pronunciation accuracy**
+> 🎙️ Built with **Murf Falcon + LiveKit**
 
 ---
 
-## Architecture
+## ✨ Key Features
+
+- 🎤 **Real-Time Voice Conversations** — Natural voice interaction powered by LiveKit and Murf Falcon
+- 🧠 **Persistent Memory** — Remembers relevant information across conversations with controlled memory handling
+- 🏛️ **Government Scheme Assistance** — Helps users understand selected government financial schemes
+- ✅ **Eligibility Checks** — Conversational eligibility evaluation based on available scheme criteria
+- 🧮 **Financial Calculations** — Supports calculations such as loan EMI
+- 📞 **Outbound Calling** — Supports agent-initiated voice interactions
+- 🧑‍💻 **Human Escalation** — Allows users to request human assistance when the AI cannot adequately help
+- 📊 **Call Analytics** — Tracks call outcomes, success rate, and recent call activity
+- 🔀 **Multi-Agent Handoff** — Transfers detailed government scheme questions to a specialist agent
+- 🛡️ **Cyber-Safety Guidance** — Provides basic guidance for situations such as suspected UPI fraud
+- 🇮🇳 **Indian Language Support** — Designed for Hindi, English, and code-mixed conversations
+
+---
+
+# 🎯 The Problem
+
+Accessing information about government schemes and financial services can sometimes require navigating multiple websites, understanding eligibility requirements, and interpreting complex information.
+
+Users may have questions such as:
+
+- Which government scheme might I be eligible for?
+- What documents do I need?
+- What are the benefits of PMJJBY or PMSBY?
+- How does UPI work?
+- How can I calculate my loan EMI?
+- What should I do if I suspect digital payment fraud?
+- Who can help when an AI assistant cannot solve my problem?
+
+Jan Sathi explores whether a **voice-first interface** can make accessing this information simpler.
+
+Instead of searching through multiple sources or filling in complicated forms, a user can simply ask:
+
+> "Which government schemes might I be eligible for?"
+
+or:
+
+> "I am 25 years old and have a bank account. Can you tell me if I am eligible for PMJJBY?"
+
+The agent can understand the request, gather relevant information, use appropriate tools, and guide the conversation.
+
+---
+
+# 🤖 How Jan Sathi Works
+
+At a high level, the system works like this:
+
+```text
+User speaks
+    ↓
+Speech-to-Text
+    ↓
+Jan Sathi AI Agent
+    ↓
+┌───────────────────────────────────────┐
+│ LLM Reasoning                         │
+│ Tools                                 │
+│ Persistent Memory                     │
+│ Government Scheme Eligibility Checks  │
+│ Human Escalation                      │
+│ Specialist Agent Handoff              │
+└───────────────────────────────────────┘
+    ↓
+Text Response
+    ↓
+Murf Falcon Text-to-Speech
+    ↓
+User hears the response
+````
+
+LiveKit provides the real-time infrastructure that connects these components and enables a conversational voice experience.
+
+---
+
+# 🚀 Core Features
+
+## 🧠 Persistent Memory
+
+A useful assistant should not always behave as if it is meeting the user for the first time.
+
+Jan Sathi includes persistent memory using SQLite so that relevant information can be retained across conversations.
+
+Memory handling is designed around user control and intentional data storage. The agent does not simply treat every piece of conversation as information that should automatically be remembered.
+
+This allows conversations to feel more continuous while keeping privacy and user control in mind.
+
+---
+
+## 🏛️ Government Scheme Assistance
+
+Jan Sathi can provide information about selected Indian government financial schemes and perform eligibility-related checks based on available criteria.
+
+Supported scheme-related assistance includes information about:
+
+* **PMJJBY** — Pradhan Mantri Jeevan Jyoti Bima Yojana
+* **PMSBY** — Pradhan Mantri Suraksha Bima Yojana
+* **PMJDY** — Pradhan Mantri Jan Dhan Yojana
+* **Atal Pension Yojana**
+* **Sukanya Samriddhi Yojana**
+* **PM-KISAN**
+
+The eligibility functionality is designed to provide informational guidance based on available scheme criteria and does not represent final official approval.
+
+---
+
+## 🛠️ Tools and Actions
+
+One of the main goals of Jan Sathi was to move beyond a simple conversational chatbot.
+
+The agent can use tools when appropriate for tasks such as:
+
+* Scheme eligibility checks
+* Scheme and document information
+* Financial calculations
+* Memory operations
+* Human escalation
+
+This allows the agent to take useful actions instead of simply generating text responses.
+
+---
+
+## 📞 Outbound Calling
+
+Jan Sathi also supports outbound voice interactions.
+
+When the agent initiates a conversation, the flow is designed to clearly communicate:
+
+* Who is calling
+* Why the call is being made
+* How the user can opt out
+
+This feature explores the additional design and consent considerations involved when an AI agent initiates a voice interaction.
+
+---
+
+## 🧑‍💻 Human Escalation
+
+An AI assistant should also know when human help may be needed.
+
+Jan Sathi includes a human escalation workflow that:
+
+1. Recognizes when human assistance may be useful
+2. Explains what information may be shared
+3. Requests user permission
+4. Creates an escalation request after consent
+5. Generates a reference ID
+6. Provides the user with a clear next step
+
+A dedicated dashboard allows human help requests to be viewed and managed.
+
+---
+
+## 📊 Call Analytics
+
+Building an AI agent is only part of the challenge. It is also useful to understand whether conversations are reaching meaningful outcomes.
+
+Jan Sathi includes a Call Analytics Dashboard that tracks:
+
+* Total calls
+* Successful calls
+* Failed calls
+* Success rate
+* Recent call history
+
+A conversation can be marked successful when defined outcomes are achieved, such as completing an eligibility check.
+
+---
+
+# 🔀 Multi-Agent Handoff
+
+As Jan Sathi grew, one important design question emerged:
+
+> **Should one agent try to become an expert at everything?**
+
+To explore this, Jan Sathi includes a separate **Government Scheme Specialist**.
+
+```text
+                User
+                  │
+                  ▼
+             Jan Sathi
+              Main Agent
+                  │
+        Detailed Government
+           Scheme Question?
+                  │
+                  ▼
+     Government Scheme Specialist
+                  │
+                  ▼
+         Continues Conversation
+```
+
+The main Jan Sathi agent handles general conversations involving financial services, digital payments, calculations, cyber-safety guidance, memory, and escalation.
+
+When the user requires deeper assistance with government schemes, the main agent announces the handoff and transfers the conversation to the Government Scheme Specialist.
+
+The specialist receives the conversation context and continues the interaction without requiring the user to repeat their entire question.
+
+---
+
+# 🐛 A Key Challenge: The Specialist Went Silent
+
+One of the most interesting problems during development happened during the multi-agent handoff.
+
+The main agent successfully announced:
+
+> "I will connect you to our Government Scheme Specialist."
+
+The handoff technically happened.
+
+But then the specialist went silent.
+
+The issue was that switching to the new agent did not automatically trigger a new response generation turn. The specialist had successfully taken over the session, but it was waiting for the user to speak again.
+
+The solution involved explicitly triggering response generation when the specialist entered the conversation and preserving the existing conversation history during the handoff.
+
+This became an important lesson:
+
+> **A system can be technically working while the user experience is still broken.**
+
+The agent handoff worked internally, but from the user's perspective, silence meant the feature was not actually complete.
+
+Testing the real conversation flow was just as important as running automated tests.
+
+---
+
+# 🏗️ Architecture
 
 ```mermaid
-flowchart LR
-    A[🎙️ User speaks] -->|audio| B[Deepgram STT]
-    B -->|text| C[LLM]
-    C -->|response text| D[Murf Falcon TTS]
-    D -->|audio| E[LiveKit]
-    E -->|stream| F[🔊 User hears]
+flowchart TD
+    A[🎙️ User Voice] --> B[Speech-to-Text]
+    B --> C[Jan Sathi Main Agent]
 
-    style A fill:#444441,stroke:#888780,color:#fff
-    style B fill:#185FA5,stroke:#85B7EB,color:#fff
-    style C fill:#534AB7,stroke:#AFA9EC,color:#fff
-    style D fill:#0F6E56,stroke:#5DCAA5,color:#fff
-    style E fill:#D85A30,stroke:#F0997B,color:#fff
-    style F fill:#444441,stroke:#888780,color:#fff
+    C --> D{User Request}
+
+    D -->|General Information| E[LLM Response]
+    D -->|Action Required| F[Agent Tools]
+    D -->|Remember Context| G[Persistent Memory]
+    D -->|Detailed Scheme Query| H[Government Scheme Specialist]
+    D -->|Human Help Needed| I[Human Escalation]
+
+    F --> J[Eligibility Checks / Calculations / Information]
+    G --> C
+    H --> C
+    I --> K[Human Help Dashboard]
+
+    E --> L[Murf Falcon TTS]
+    J --> L
+    H --> L
+
+    L --> M[🔊 User Response]
+
+    C --> N[📊 Call Analytics]
 ```
 
 ---
 
-## Quickstart
+# 🛠️ Tech Stack
 
-### Prerequisites
+| Technology         | Purpose                                            |
+| ------------------ | -------------------------------------------------- |
+| **LiveKit Agents** | Real-time voice infrastructure and agent framework |
+| **Murf Falcon**    | Text-to-Speech                                     |
+| **Deepgram**       | Speech-to-Text                                     |
+| **Google Gemini**  | Agent reasoning                                    |
+| **Python**         | Backend voice agent                                |
+| **Next.js**        | Frontend                                           |
+| **TypeScript**     | Frontend development                               |
+| **SQLite**         | Persistent memory and local data storage           |
 
-- **Python** 3.10+
-- **[uv](https://docs.astral.sh/uv/)** - fast Python package manager
-  ```bash
-  # macOS/Linux
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  # Windows (PowerShell)
-  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-  ```
-- **Node.js** 18+
-- **pnpm** — fast Node package manager
-  ```bash
-  npm install -g pnpm
-  ```
-- A [LiveKit](https://cloud.livekit.io/) project (free tier available)
+---
 
-### Step 1: Clone the repo
+# 📁 Project Structure
+
+```text
+murf-livekit-starter/
+│
+├── backend/
+│   ├── src/
+│   │   ├── agent.py
+│   │   ├── prompt.py
+│   │   ├── memory.py
+│   │   ├── schemes_data.py
+│   │   └── ...
+│   │
+│   └── tests/
+│       ├── test_agent.py
+│       ├── test_day5_eligibility.py
+│       ├── test_day7_escalation.py
+│       ├── test_day8_analytics.py
+│       └── test_day9_handoff.py
+│
+├── frontend/
+│   ├── app/
+│   ├── components/
+│   └── ...
+│
+└── README.md
+```
+
+---
+
+# 🚀 Getting Started
+
+## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/murf-ai/murf-livekit-starter.git
+git clone https://github.com/UnWebVoid/murf-livekit-starter.git
 cd murf-livekit-starter
 ```
 
-### Step 2: Set up environment variables
+---
 
-Create `.env.local` in both `backend/` and `frontend/` (copy from `.env.example` in each). You need:
+## 2. Configure Environment Variables
 
-| Variable                               | Where to get it                                        | Required |
-| -------------------------------------- | ------------------------------------------------------ | -------- |
-| `LIVEKIT_URL`                          | LiveKit Cloud dashboard                                | Yes      |
-| `LIVEKIT_API_KEY`                      | LiveKit Cloud dashboard                                | Yes      |
-| `LIVEKIT_API_SECRET`                   | LiveKit Cloud dashboard                                | Yes      |
-| `MURF_API_KEY`                         | [murf.ai/api/dashboard](https://murf.ai/api/dashboard) | Yes      |
-| `DEEPGRAM_API_KEY`                     | [deepgram.com](https://deepgram.com)                   | Yes      |
-| `GOOGLE_API_KEY` (or `OPENAI_API_KEY`) | Depends on LLM choice                                  | Yes      |
+Create your local environment configuration files based on the example files included in the project.
 
-### Step 3: Install backend dependencies
+Add the required API keys and configuration values locally.
+
+**Do not commit API keys, secrets, phone numbers, or private user data to the repository.**
+
+The project uses services such as:
+
+* Murf API
+* LiveKit
+* Google Gemini
+* Deepgram
+
+Configure the required credentials in your local environment files.
+
+---
+
+## 3. Set Up the Backend
+
+Navigate to the backend directory and install the required dependencies.
 
 ```bash
 cd backend
-uv sync
-uv run python src/agent.py download-files
 ```
 
-### Step 4: Install frontend dependencies
+Create and activate a Python virtual environment, then install the dependencies.
+
+Example:
+
+```bash
+python -m venv .venv
+```
+
+On Windows:
+
+```bash
+.venv\Scripts\activate
+```
+
+Install dependencies:
+
+```bash
+pip install -e .
+```
+
+---
+
+## 4. Start LiveKit
+
+Run the LiveKit development server.
+
+```bash
+livekit-server --dev
+```
+
+---
+
+## 5. Start the Voice Agent
+
+From the backend directory:
+
+```bash
+python src/agent.py dev
+```
+
+The LiveKit agent worker should start and register the Jan Sathi voice agent.
+
+---
+
+## 6. Start the Frontend
+
+Open another terminal and navigate to the frontend directory:
 
 ```bash
 cd frontend
+```
+
+Install dependencies:
+
+```bash
 pnpm install
 ```
 
-### Step 5: Run it
-
-**Option A - All-in-one (from repo root):**
+Start the development server:
 
 ```bash
-# macOS/Linux
-chmod +x start_app.sh
-./start_app.sh
-
-# Windows (PowerShell)
-.\start_app.ps1
+pnpm dev
 ```
 
-**Option B - Separate terminals:**
+Then open:
+
+```text
+http://localhost:3000
+```
+
+Connect to the voice agent and start a conversation.
+
+---
+
+# 🧪 Testing
+
+The project includes automated tests covering different parts of the agent functionality.
+
+From the backend directory:
 
 ```bash
-# Terminal 1 — LiveKit Server
-livekit-server --dev
-
-# Terminal 2 — Backend agent
-cd backend && uv run python src/agent.py dev
-
-# Terminal 3 — Frontend
-cd frontend && pnpm dev
+pytest -v
 ```
 
-Then open **http://localhost:3000** in your browser.
+The project also uses Ruff for code quality checks:
 
-You should now see the voice agent UI. Click **Start talking**, allow microphone access, and speak — the agent will respond with Murf Falcon TTS. Ensure your backend and (if using Option B) LiveKit server are running.
+```bash
+ruff check src tests
+```
 
 ---
 
-## Deploy
+# 💬 Example Conversations
 
-Want to deploy this beyond localhost? You'll need to deploy **two services**: the backend agent and the frontend. Both must use the same LiveKit project.
+### General Financial Question
 
-> This is a two-service app — the backend agent and the frontend UI deploy separately. You'll need both running and connected to the same LiveKit project.
+> **User:** What is UPI?
 
-### Backend (Python agent) — Deploy to Railway
-
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tIVCF1?referralCode=cNjn2P&utm_medium=integration&utm_source=template&utm_campaign=generic)
-
-Set these environment variables in Railway:
-
-- `MURF_API_KEY`
-- `DEEPGRAM_API_KEY`
-- `GOOGLE_API_KEY` or `OPENAI_API_KEY`
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-
-The backend runs as a long-lived Python process that connects to LiveKit as an agent. Railway handles this well.
-
-### Frontend (Next.js) — Deploy to Vercel
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/murf-ai/murf-livekit-starter&root-directory=frontend&env=LIVEKIT_URL,LIVEKIT_API_KEY,LIVEKIT_API_SECRET&project-name=murf-voice-agent&repository-name=murf-voice-agent)
-
-Set these environment variables in Vercel:
-
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-- `AGENT_NAME` (optional — for explicit agent dispatch)
-
-The frontend is a standard Next.js app. Point it at the same LiveKit instance your backend agent is connected to.
-
-### Connecting them
-
-The frontend and backend don't call each other directly — they both connect to **LiveKit**, which handles the real-time audio transport.
-
-1. Use the **same** `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` on both Railway and Vercel
-2. Set `AGENT_NAME=my-agent` on Vercel — this matches the `agent_name="my-agent"` registered in `backend/src/agent.py`
-3. Verify: Railway logs should show the agent connected to LiveKit. Open your Vercel URL, click **Start talking** — the agent should respond
-
-If the agent doesn't connect, double-check that both services point to the same LiveKit project and that the backend is running (check Railway logs).
+Jan Sathi should answer directly without transferring the conversation.
 
 ---
 
-## Change the Use Case
+### Government Scheme Question
 
-The default system prompt makes this a **customer support agent**. You can change the agent’s behavior by editing the prompt.
+> **User:** I want detailed information about PMJJBY, including eligibility and required documents.
 
-**Where the prompt lives:** `backend/src/agent.py`- the `SYSTEM_PROMPT` constant (near the top of the file, after the imports). Change that string to change what your voice agent does.
+Expected flow:
 
-### Example prompts (copy-paste)
-
-**Customer Support (default):**
-
-```
-You are a friendly and efficient customer support agent for a tech company. Help users with account issues, billing questions, and product troubleshooting. Be concise, empathetic, and solution-oriented. If you don't know something, say so honestly and offer to escalate.
-```
-
-**Language Tutor:**
-
-```
-You are a patient and encouraging language tutor helping the user practice conversational Spanish. Speak primarily in Spanish but switch to English to explain grammar or vocabulary when needed. Correct mistakes gently and suggest better phrasing. Keep conversations natural and fun.
-```
-
-**AI Receptionist:**
-
-```
-You are a professional receptionist for a medical clinic. Help callers schedule appointments, answer questions about office hours and services, and take messages for doctors. Be warm but efficient. Ask for the caller's name and reason for calling upfront.
-```
-
-See the Configuration section below for voice, STT, and LLM options.
+1. Jan Sathi identifies that detailed specialist help is useful.
+2. The main agent announces the handoff.
+3. The conversation is transferred to the Government Scheme Specialist.
+4. The specialist introduces itself.
+5. The specialist continues answering the existing question without requiring the user to repeat it.
 
 ---
 
-## Configuration
+### Financial Calculation
 
-### Murf voice
+> **User:** Calculate the EMI for a ₹5 lakh loan at 8.5% interest for 5 years.
 
-Edit the `tts=murf.TTS(...)` call in `backend/src/agent.py`. Set the `voice` argument to any Murf voice ID. Examples:
-
-- `Anisha` — Indian English (female, default in this starter)
-- `Pooja` — Indian English (female)
-- `Samar` — Indian English (male)
-- `Amara` — US English (female)
-- `Gordon` — US English (male)
-- `Hazel` — UK English (female)
-- `Bertie` — UK English (male)
-
-Browse all voices: [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library).
-
-### STT provider
-
-STT is configured in `backend/src/agent.py` in the `AgentSession(stt=...)` call. The default is Deepgram (`deepgram.STT(model="nova-3")`). You can swap to another LiveKit-compatible STT plugin if needed.
-
-### LLM (Gemini vs OpenAI)
-
-- **Gemini (default):** Set `GOOGLE_API_KEY` and use `llm=google.LLM(model="gemini-3.5-flash-lite")` in `agent.py`.
-- **OpenAI:** Set `OPENAI_API_KEY`, add the OpenAI plugin, and use the corresponding `llm=openai.LLM(...)` in `agent.py`.
-
-### Audio format
-
-Murf Falcon and LiveKit handle audio format internally. For advanced options, see [Murf API docs](https://murf.ai/api/docs) and [LiveKit docs](https://docs.livekit.io).
-
-## Day 5 — Jan Sathi Scheme Eligibility Tool (`check_financial_scheme_eligibility`)
-
-Jan Sathi features a specialized function tool `check_financial_scheme_eligibility` for conversational eligibility evaluation of Indian government financial schemes.
-
-- **Supported Schemes**:
-  - **PMJJBY**: Life insurance cover (age 18–50, bank/Post Office account, ₹436/yr, ₹2 lakh cover).
-  - **PMSBY**: Accident insurance cover (age 18–70, bank/Post Office account, ₹20/yr, ₹2 lakh accidental death/total disability, ₹1 lakh partial disability).
-  - **PMJDY**: Basic banking access for unbanked individuals (zero minimum balance BSBD account, free RuPay debit card, overdraft facility).
-- **Data Source**: Locally curated dataset derived from official Government of India Department of Financial Services (DFS) portals ([https://www.financialservices.gov.in/schemes-and-services](https://www.financialservices.gov.in/schemes-and-services)), verified as of **August 10, 2026**.
-- **Transparent Output**: Results are communicated as informational basic eligibility checks and strictly state the verification date and official source without claiming to be live data.
-- **Graceful Failure**: Employs exception-safe evaluation returning structured error status on data failure.
+The agent can use the appropriate calculation functionality to help answer the request.
 
 ---
 
-## Project Structure
+### Human Help
 
-```
-murf-livekit-starter/
-├── backend/                 # Python voice agent (LiveKit Agents + Murf Falcon)
-│   ├── src/
-│   │   └── agent.py         # Agent entrypoint, pipeline (STT/LLM/TTS), system prompt
-│   ├── tests/               # Agent tests
-│   ├── .env.example         # Backend env template
-│   ├── pyproject.toml       # Python deps (uv)
-│   └── railway.toml         # Railway deploy config
-├── frontend/                # Next.js UI for voice sessions
-│   ├── app/
-│   │   ├── page.tsx         # Main page
-│   │   └── api/token/       # LiveKit token endpoint (dev)
-│   ├── components/          # UI (agents-ui, app config, theme)
-│   ├── app-config.ts        # Branding, title, button text, accent
-│   ├── .env.example         # Frontend env template
-│   └── package.json         # Node deps (pnpm)
-├── start_app.sh             # Start LiveKit + backend + frontend (macOS/Linux)
-├── start_app.ps1            # Start LiveKit + backend + frontend (Windows)
-├── README.md                # This file
-```
+> **User:** I need help from a human.
 
-For deeper documentation on each part, see:
-
-- [Backend Documentation](./backend/README.md) — agent pipeline, voice/LLM/STT configuration, testing, deployment
-- [Frontend Documentation](./frontend/README.md) — UI customization, visualizers, theming, component architecture
+Jan Sathi can begin the escalation process, explain what information may be shared, request permission, and create an escalation request.
 
 ---
 
-## Links
+# 🧪 Development Journey
 
-- [Murf API Docs](https://murf.ai/api/docs)
-- [Murf Voice Library](https://murf.ai/api/docs/voices-styles/voice-library)
-- [LiveKit Docs](https://docs.livekit.io)
-- [Deepgram Docs](https://developers.deepgram.com)
-- [Murf Falcon Benchmarks](https://murf.ai/falcon/benchmarks)
-- [TTS Latency Benchmarker](https://github.com/sahilsgupta/tts-latency-benchmarker) — run your own p50/p95 tests across providers
-- [Murf Discord](https://discord.gg/FbKAy96Sz7)
-- [Murf Startup Incubator](https://murf.ai/api) — 50M free characters for startups
+Jan Sathi was built and expanded during **10 Days of Voice Agents — VoiceForBharat Edition**.
+
+The project evolved through multiple stages, including:
+
+* **Core Voice Agent** — Building the real-time conversational foundation
+* **Memory** — Adding persistent user context with controlled memory handling
+* **Government Scheme Eligibility** — Creating tools for informational eligibility checks
+* **Outbound Calling** — Supporting agent-initiated voice interactions
+* **Human Escalation** — Allowing users to request help beyond the AI agent
+* **Call Analytics** — Tracking call outcomes and conversation success
+* **Multi-Agent Handoff** — Introducing a Government Scheme Specialist for detailed scheme queries
+* **Testing and Debugging** — Improving the project through automated tests and real conversation testing
+
+The project was built by extending the **Murf LiveKit Starter** into a customized voice agent focused on financial services and government scheme assistance.
 
 ---
 
-## License
+# 🚀 What's Next?
 
-MIT
+Jan Sathi is an experimental project and can be further improved with:
+
+* More government schemes and verified data sources
+* Improved multilingual and code-mixed conversations
+* Additional specialist agents
+* More advanced human escalation workflows
+* Real-time analytics updates
+* Production deployment
+* Improved monitoring and reliability
+
+The goal is to make the system more capable without making the experience more complicated for the user.
+
+---
+
+# 🔗 Links
+
+* 💻 **GitHub Repository:** [click here](https://github.com/UnWebVoid/murf-livekit-starter)
+* 📝 **DEV Article:** [click here](https://dev.to/unwebvoid/building-jan-sathi-my-10-day-voice-agent-journey-with-murf-falcon-and-livekit-4f9g)
+* 💼 **LinkedIn:** [click here](https://lnkd.in/p/dYVwWCnP)
+
+---
+
+# 🙌 Acknowledgements
+
+This project was built as part of **10 Days of Voice Agents — VoiceForBharat Edition**.
+
+The project uses and extends the **Murf LiveKit Starter** as its foundation.
+
+Special thanks to:
+
+* **Murf AI** for Murf Falcon Text-to-Speech
+* **LiveKit** for real-time voice infrastructure
+* **Google Gemini**
+* **Deepgram**
+* The **10 Days of Voice Agents — VoiceForBharat Edition** community
+
+---
+
+## 🇮🇳 Jan Sathi (जन साथी)
+
+### Your Voice. Your Guide. Your Saathi.
+
+🎙️ Built with **Murf Falcon + LiveKit**
+
+````
